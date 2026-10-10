@@ -24,7 +24,25 @@ const { prepare } = require('./test-environment.cjs');
     await page.waitForLoadState('domcontentloaded');
     assert.equal(new URL(page.url()).origin, 'null'); // custom scheme
     assert.ok(page.url().startsWith('civitas://app/'));
+    // Hidden tests must never open OS dialogs on the user's desktop.
+    assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences().disableDialogs), true);
+    const dialogs = [];
+    // DevTools still reports dialog attempts when native display is disabled.
+    page.on('dialog', dialog => { dialogs.push(dialog.type()); dialog.dismiss().catch(() => {}); });
+    const confirmation = await page.evaluate(() => { alert('Isolated test alert'); return confirm('Isolated test confirmation'); });
+    assert.equal(confirmation, false);
+    assert.deepEqual(dialogs, ['alert', 'confirm']);
     await page.locator('#home-create-btn').waitFor();
+    await page.waitForFunction(() => !!window.CivitasApp?.storage);
+    const stored = () => page.evaluate(() => {
+      const storage = CivitasApp.storage;
+      return Object.fromEntries(storage.keys().sort().map(key => [key, storage.getItem(key)]));
+    });
+    const beforeImport = await stored();
+    const rejected = page.waitForEvent('dialog');
+    await page.setInputFiles('#home-import-file', { name: 'invalid.civitasmap', mimeType: 'application/json', buffer: Buffer.from('{}') });
+    assert.equal((await rejected).message(), 'That file is not a Civitas map file.');
+    assert.deepEqual(await stored(), beforeImport);
     assert.equal(await page.evaluate(() => typeof polygonClipping.union), 'function');
     const roles = await app.evaluate(({ Menu }) => {
       const collect = menu => menu.items.flatMap(item => [item.role, ...(item.submenu ? collect(item.submenu) : [])]);

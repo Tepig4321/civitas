@@ -83,6 +83,8 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: true,
       backgroundThrottling: !HIDE_TEST_WINDOW,
+      // Native alert/confirm dialogs can surface even when their test window is hidden.
+      disableDialogs: HIDE_TEST_WINDOW,
     },
   });
   mainWindow.once('ready-to-show', () => { if (!HIDE_TEST_WINDOW) mainWindow.show(); });
