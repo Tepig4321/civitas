@@ -12,7 +12,7 @@ function fixture() {
     {id:'b',block:'000000000000002',city:null,stats:[20,22,24,20,800,4,240],votes:{race:[8,10,2],past:[3,8,1]}},
     {id:'c',block:'000000000000003',city:'town',stats:[5,5,6,5,100,1,40],votes:{race:[3,2,0],past:[2,1,0]}},
   ].map((a,i)=>({...a,polygons:[[[[i,0],[i+1,0],[i+1,1],[i,1],[i,0]]]]}));
-  const parents=[{_id:'County|1',precinct:'1',county:'County',districtId:null,bbox:[0,0,2,1],atomFile:'atoms.json.gz',pop20:30},{_id:'County|2',precinct:'2',county:'County',districtId:null,bbox:[2,0,3,1],atomFile:'atoms.json.gz',pop20:5}];
+  const parents=[{_id:'County|1',precinct:'1',county:'County',districtId:null,bbox:[0,0,2,1],atomFile:'atoms.json.gz',pop20:30},{_id:'Other County|2',precinct:'2',county:'Other County',districtId:null,bbox:[2,0,3,1],atomFile:'other-atoms.json.gz',pop20:5}];
   let meta={count:2,mode:'by-district',name:'Test',basis:'census',names:{},locked:{}},visible=[],persisted=0;
   const sandbox={CivitasEditor:core,document:{getElementById:element,addEventListener(){}},location:{href:'https://fixture/'},URL,setTimeout,clearTimeout,console,addEventListener(type,fn){listeners[type]=fn;},Worker:class{postMessage(req){queueMicrotask(()=>this.onmessage({data:req.operation==='union'?{id:req.id,groups:{shape:req.groups.shape.flat()}}:{id:req.id,statKeys,parents:Object.fromEntries(req.parents.map(id=>[id,id==='County|1'?atoms.slice(0,2):atoms.slice(2)]))}}));}}};
   vm.runInNewContext(fs.readFileSync(require.resolve('../web/lib/editor-controller.js'),'utf8'),sandbox);
@@ -66,7 +66,7 @@ test('version 2 restore preserves split assignments and history; invalid restore
   const next=fixture();await next.editor.restore(saved,'Saved');
   assert.equal(next.parents[0]._children[0].districtId,2);assert.equal(next.editor.history.canUndo,true);
   const before=core.copy(next.editor.snapshot());
-  await assert.rejects(next.editor.restore({...saved,unitAssignments:{'County|1':{district:1},'County|2':{district:999}}},'Bad'),/Invalid district/);
+  await assert.rejects(next.editor.restore({...saved,unitAssignments:{'County|1':{district:1},'Other County|2':{district:999}}},'Bad'),/Invalid district/);
   assert.deepEqual(core.copy(next.editor.snapshot()),before);
   await assert.rejects(next.editor.restore({...saved,dataset:'future'},'Bad'),/unavailable/);
 });

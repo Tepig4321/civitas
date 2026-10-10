@@ -1,6 +1,6 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
-const {History,allocate,aggregate,SpatialIndex}=require('../web/lib/editor-core');
+const {History,allocate,aggregate,setElectionMargin,SpatialIndex}=require('../web/lib/editor-core');
 const state=n=>({assignments:{p:{district:n,overrides:{b:2}}},meta:{count:3,name:'Map'},names:{3:'Third'},locked:{3:true}});
 test('undo restores splits, deleted districts and metadata; branching discards redo',()=>{
  const h=new History(),a=state(1),b=state(2);delete b.names[3];delete b.locked[3];b.meta.count=2;
@@ -21,9 +21,16 @@ test('statistics derive averages and ratios from summed components',()=>{
  const r=aggregate([{dem:1,rep:3,age_sum:100,age_total:10,inc_medw:10000,inc_medhh:1},{dem:5,rep:1,age_sum:100,age_total:2,inc_medw:60000,inc_medhh:3}],['dem','rep','age_sum','age_total','inc_medw','inc_medhh']);
  assert.equal(r.margin,.2);assert.equal(r.age_avg,200/12);assert.equal(r.inc_med,17500);
 });
+test('split election margins preserve Other candidates and no-vote records',()=>{
+ assert.deepEqual(setElectionMargin({dem:10,rep:5,other:20}),{dem:10,rep:5,other:20,lead:'x',margin:1/3});
+ assert.equal(aggregate([{dem:5,rep:20,other:10}],['dem','rep','other']).margin,-1/3);
+ assert.equal(setElectionMargin({dem:0,rep:0,other:0}).margin,null);
+});
 test('spatial index includes large shapes and filters empty bounding boxes',()=>{
  const a={bbox:[0,0,1,1]},b={bbox:[-10000,-10000,10000,10000]};
  const index=new SpatialIndex([a,b],1);assert.deepEqual(index.at(.5,.5),[a,b]);assert.deepEqual(index.at(2,2),[b]);
+ assert.deepEqual(index.range([2,2,3,3]),[b]);
+ assert.deepEqual(new Set(index.range([0,0,3,3])),new Set([a,b]));
 });
 
  test('display omits subpixel fragments without modifying exact geometry',()=>{

@@ -2182,18 +2182,7 @@ html, body {
   }
   var OTHER_RGB = [0x69, 0x69, 0x69];
   function setMargin(o) {
-    var d = o.dem, r = o.rep, x = o.other;
-    o.lead = null;
-    if (!(d + r + x > 0)) { o.margin = null; return; }
-    var order = [['d', d], ['r', r], ['x', x]].sort(function(a, b) { return b[1] - a[1]; });
-    if (order[0][0] !== 'x' && order[1][0] !== 'x') {
-      o.margin = d + r > 0 ? (d - r) / (d + r) : null;
-      o.lead = o.margin === null ? null : (o.margin >= 0 ? 'd' : 'r');
-      return;
-    }
-    var top = order[0], second = order[1], mag = (top[1] - second[1]) / (top[1] + second[1]);
-    o.lead = top[0];
-    o.margin = top[0] === 'r' ? -mag : mag;
+    CivitasEditor.setElectionMargin(o);
   }
   function leaderName(o, race) {
     return o.lead === 'x' ? 'Other' : (o.margin >= 0 ? race.demShort : race.repShort);
@@ -2291,7 +2280,6 @@ html, body {
     return rings;
   }
 
-  var MIN_RING_AREA = 1e-10;
 
   function ringArea(ring) {
     var area = 0;
@@ -2408,7 +2396,7 @@ html, body {
     var paths = [new Path2D(), new Path2D(), new Path2D()], rings = [], bestArea = -1, label = null;
     result.forEach(function(poly) { poly.forEach(function(ring, ringIdx) {
       var area = ringArea(ring);
-      if (area < MIN_RING_AREA) return;
+      if (area === 0) return;
       var lods = [ring, decimateRing(ring, LOD_EPS[1]), decimateRing(ring, LOD_EPS[2])];
       for (var l = 0; l < 3; l++) if(CivitasEditor.displayRing(ring,l)) addRingToPath(paths[l], lods[l]);
       rings.push({outer:ringIdx===0,lods:lods});
@@ -5701,8 +5689,15 @@ html, body {
   async function exportDistrictsGeoJSON() {
     if (!geoProj || !shapes.length) { alert('The map is still loading. Try again in a moment.'); return; }
     computeDistrictBorders();
-    await Promise.all(Object.values(districtGeomCache).map(function(g) { return g && g.pending; }));
-    if (Object.values(districtGeomCache).some(function(g) { return g && g.failed; })) { editor.notice('Export paused because an outline could not be merged.',true); return; }
+    // A virtual piece may finish merging while its district outline is pending.
+    // Wait for the current outlines as well as any replacements created by that merge.
+    while (true) {
+      var outlines=Object.values(districtGeomCache);
+      if (outlines.some(function(g) { return g && g.failed; })) { editor.notice('Export paused because an outline could not be merged.',true); return; }
+      var pending=outlines.filter(function(g) { return g && g.pending; }).map(function(g) { return g.pending; });
+      if (!pending.length) break;
+      await Promise.all(pending);computeDistrictBorders();
+    }
     var extras = {};
     for (var i = 0; i < shapes.length; i++) {
       var sh = shapes[i];
@@ -5809,6 +5804,8 @@ html, body {
     projection: function() { return geoProjectionConfig; },
     project: function(lon, lat) { return geoProj.fwd(lon, lat); },
     parse: parseRings, path: function(s) { return shapePath(s, 0); },
+    displayPath: function(s,scale) { return displayPath(s,lodForScale(scale)); },
+    viewport: function() { return [view.x,view.y,view.x+view.w,view.y+view.h]; },
     contains: function(s,x,y) { ctx.save(); ctx.setTransform(1,0,0,1,0,0); var hit = ctx.isPointInPath(shapePath(s,0),x,y); ctx.restore(); return hit; },
     fetchCities: function() { return fetchJSON(currentState.dataDir + 'cities.json'); },
     statKeys: function() { return Array.from(new Set(['pop','pop20','pop20Adjusted','pop10','pop00','totreg','dem','rep','other'].concat(ETH_GROUPS.map(function(l) { return l.key; }), EDU_KEYS, AGE_KEYS, ORIGIN_KEYS, LANG_KEYS, INC_KEYS, POP_MORE_KEYS, SHIFT_KEYS))); },

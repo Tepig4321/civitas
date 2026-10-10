@@ -74,14 +74,25 @@
     for (let n=0;n<left;n++) result[order[n%order.length]]++;
     return result;
   }
+  function setElectionMargin(out) {
+    const d=out.dem||0,r=out.rep||0,x=out.other||0;
+    out.lead=null;
+    if(!(d+r+x>0)){out.margin=null;return out;}
+    const order=[['d',d],['r',r],['x',x]].sort((a,b)=>b[1]-a[1]);
+    if(order[0][0]!=='x'&&order[1][0]!=='x') {
+      out.margin=(d-r)/(d+r);out.lead=out.margin>=0?'d':'r';
+    }else {
+      const [top,second]=order,mag=(top[1]-second[1])/(top[1]+second[1]);
+      out.lead=top[0];out.margin=top[0]==='r'?-mag:mag;
+    }
+    return out;
+  }
   function aggregate(records,keys) {
     const out={};
     for (const key of keys) out[key]=records.reduce((s,r) => s+(Number(r[key])||0),0);
     out.age_avg=out.age_total ? out.age_sum/out.age_total : 0;
     out.inc_med=out.inc_medhh ? out.inc_medw/out.inc_medhh : 0;
-    const two=(out.dem||0)+(out.rep||0);
-    out.margin=two ? ((out.dem||0)-(out.rep||0))/two : null;
-    return out;
+    return setElectionMargin(out);
   }
   function displayRing(ring,lod) {
     if(ring._displaySize===undefined) {
@@ -105,6 +116,11 @@
       }
     }
     at(x,y) {return [...(this.buckets.get(Math.floor(x/this.cell)+','+Math.floor(y/this.cell))||[]),...this.large].filter(r => x>=r.bbox[0]&&x<=r.bbox[2]&&y>=r.bbox[1]&&y<=r.bbox[3]);}
+    range(b) {
+      const found=new Set(this.large),x0=Math.floor(b[0]/this.cell),x1=Math.floor(b[2]/this.cell),y0=Math.floor(b[1]/this.cell),y1=Math.floor(b[3]/this.cell);
+      for(let x=x0;x<=x1;x++)for(let y=y0;y<=y1;y++)for(const r of this.buckets.get(x+','+y)||[])found.add(r);
+      return [...found].filter(r=>r.bbox[0]<=b[2]&&r.bbox[2]>=b[0]&&r.bbox[1]<=b[3]&&r.bbox[3]>=b[1]);
+    }
   }
-  return {History,difference,allocate,aggregate,SpatialIndex,displayRing,copy};
+  return {History,difference,allocate,aggregate,setElectionMargin,SpatialIndex,displayRing,copy};
 });

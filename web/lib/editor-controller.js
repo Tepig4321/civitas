@@ -1,6 +1,6 @@
 (function(root) {
   'use strict';
-  const {History,aggregate,SpatialIndex,copy}=root.CivitasEditor;
+    const {History,aggregate,setElectionMargin,SpatialIndex,copy}=root.CivitasEditor;
   root.createCivitasController=function(bridge) {
     const worker=new Worker('lib/block-worker.js'),pending=new Map();let serial=0;
     worker.onmessage=({data})=>{const p=pending.get(data.id);if(!p)return;pending.delete(data.id);data.error?p.reject(new Error(data.error)):p.resolve(data);};
@@ -82,7 +82,7 @@
       const race=bridge.race();const votes=a._votes[race?.key]||[0,0,0];[a.dem,a.rep,a.other]=votes;
       const shift=bridge.shift();const va=a._votes[shift.from]||[0,0,0],vb=a._votes[shift.to]||[0,0,0];
       [a.shAd,a.shAr,a.shAo]=va;[a.shBd,a.shBr,a.shBo]=vb;
-      a.margin=a.dem+a.rep?(a.dem-a.rep)/(a.dem+a.rep):null;
+      setElectionMargin(a);
       a.inc_med=a.inc_medhh?a.inc_medw/a.inc_medhh:0;a.age_avg=a.age_total?a.age_sum/a.age_total:0;
     }
     function groupShape(p,atoms,key,blockId) {
@@ -229,7 +229,11 @@
       unionGeometry:async polygons=>(await request({operation:'union',groups:{shape:polygons}})).groups.shape,
       pickCandidates:(x,y)=>shapeIndex?shapeIndex.at(x,y):null,
       pointer(x,y){pointer=[x,y];const previous=hoverCity;hoverCity=null;if(cityIndex)for(const c of cityIndex.at(x,y)){if(bridge.contains(c,x,y)){hoverCity=c;break;}}if(previous!==hoverCity&&bridge.paintBy()==='city')bridge.redraw();},
-      overlay(ctx,scale){if(bridge.paintBy()==='city'||document.getElementById('show-city-borders').checked){ctx.strokeStyle='#24cbd1';ctx.lineWidth=1.2/scale;for(const c of cities){if(hoverCity===c&&bridge.paintBy()==='city'){ctx.fillStyle='rgba(36,203,209,.14)';ctx.fill(bridge.path(c));ctx.lineWidth=2.5/scale;}ctx.stroke(bridge.path(c));ctx.lineWidth=1.2/scale;}}if(opened){ctx.strokeStyle='#24cbd1';ctx.lineWidth=2.5/scale;ctx.stroke(bridge.path(opened));}},
+      overlay(ctx,scale){if(bridge.paintBy()==='city'||document.getElementById('show-city-borders').checked){
+        const bounds=bridge.viewport?.(),visible=bounds&&cityIndex?cityIndex.range(bounds):cities;
+        ctx.strokeStyle='#24cbd1';ctx.lineWidth=1.2/scale;
+        for(const c of visible){const path=bridge.displayPath?bridge.displayPath(c,scale):bridge.path(c);if(hoverCity===c&&bridge.paintBy()==='city'){ctx.fillStyle='rgba(36,203,209,.14)';ctx.fill(path);ctx.lineWidth=2.5/scale;}ctx.stroke(path);ctx.lineWidth=1.2/scale;}
+      }if(opened){ctx.strokeStyle='#24cbd1';ctx.lineWidth=2.5/scale;ctx.stroke(bridge.path(opened));}},
       endStroke(){sync();finish();bridge.refresh();},
       metadataChanged(text,fn){if(busy||bridge.readOnly()){updates();return;}begin(text);fn();sync();finish();bridge.refresh();},
       reduceCount(n){const meta=bridge.meta();for(const section of [meta.names,meta.locked])for(const key of Object.keys(section))if(Number(key)>n)delete section[key];for(const p of parents){p._version=(p._version||0)+1;if(p.districtId>n)p.districtId=null;if(p._children)for(const a of p._children)if(a.districtId>n)a.districtId=null;}},

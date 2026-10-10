@@ -1,34 +1,35 @@
 # Civitas
 
-ElectionCord Civitas desktop source, California data, and local release artifacts.
+ElectionCord Civitas desktop source, California data and local release artifacts.
 
-Develop with `npm ci` and `npm start`. Run `npm test` for editor unit tests and `npm run test:smoke` for the isolated-profile Electron smoke test. Build Mac packages with `npm run dist:mac`.
+## Develop and verify
 
-The runnable source was recovered from the packaged Windows app and consolidated from the previous Mac project. The original project source and Git history are backed up locally under `archives/legacy-project/`.
+Use `npm ci` and `npm start`. Run `npm test`, `npm run test:smoke` and `npm run test:editor`. Electron checks use temporary profiles and do not touch saved user maps. See [the editor guide](docs/EDITOR.md) for tools, history, migration and data methods.
+
+Rebuild the geodata with Python 3.14:
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -r scripts/geodata-requirements.txt
+npm run data:fetch
+npm run data:build
+npm run data:validate
+```
+
+Downloaded inputs and intermediate tables live in `.cache/geodata/`. Bundled output lives in `web/data/block-v1/`, including source URLs/checksums and county allocation audits. The builder resumes counties matching its build revision. Keep an incomplete dataset out of release packages; the final manifest must contain all 58 counties and 39,538,223 original Census residents.
+
+## Package
+
+`npm run dist:mac` builds Apple Silicon and Intel DMG/ZIP files. `npm run dist:win` builds a Windows x64 ZIP. Artifacts are local and unsigned/ad-hoc signed; these commands do not publish.
 
 ## Folder layout
 
-```text
-civitas/
-├── releases/
-│   ├── macos/1.0.0/          # Apple Silicon (arm64) and Intel (x64) disk images
-│   └── windows/0.0.1/        # Packaged Windows ZIP
-├── builds/
-│   └── windows/win-unpacked/ # Complete extracted Windows application
-└── archives/
-    └── source/0.0.1/
-        ├── civitas-0.0.1.tar.gz
-        ├── civitas-0.0.1.zip
-        └── extracted/
-            ├── civitas-0.0.1/
-            └── civitas-0.0.1-copy-2/
-```
+- `main.js`, `web/`: runnable Electron app and bundled data.
+- `scripts/`, `tests/`, `docs/`: build pipeline, checks and editor documentation.
+- `dist/`: new build artifacts and verification screenshots.
+- `releases/<platform>/<version>/`: preserved release downloads.
+- `builds/windows/win-unpacked/`: original complete extracted Windows app.
+- `archives/source/0.0.1/`: original source downloads, which contained only README files.
+- `archives/legacy-project/`: preserved sibling-project source and Git history, unique build artifacts and checksum inventory.
 
-## Working with these files
-
-- Installers and release downloads belong in `releases/<platform>/<version>/`.
-- Keep the entire `builds/windows/win-unpacked/` directory together. Its executable, DLLs, locales, and resources depend on their relative locations. Bundled web assets and election data are under `resources/web/`; the packaged Electron app is `resources/app.asar`.
-- The source ZIP, tarball, and both extracted copies contain only the original README. They do not provide the application source; the runnable application is now in `main.js` and `web/`. The second extracted copy was renamed from `civitas-0.0.1 2` to `civitas-0.0.1-copy-2`.
-- Versions above follow the downloaded filenames; Windows and macOS downloads carry different version numbers.
-
-Release binaries, unpacked builds, and archived downloads are kept locally and ignored by Git. All original downloads and extracted files have been preserved.
+The recovered runnable source has been consolidated here. Release binaries, archived downloads, build artifacts, dependencies and caches are ignored by Git. Original downloads and unique artifacts have been preserved.
