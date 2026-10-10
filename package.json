@@ -1,0 +1,54 @@
+{
+  "name": "electioncord-civitas",
+  "productName": "ElectionCord Civitas",
+  "version": "1.0.0",
+  "description": "ElectionCord's Civitas: redistricting and election analysis, as a desktop app.",
+  "author": "ElectionCord",
+  "main": "main.js",
+  "dependencies": {
+    "polygon-clipping": "0.15.7"
+  },
+  "private": true,
+  "scripts": {
+    "postinstall": "install-electron",
+    "start": "electron .",
+    "dist:mac": "electron-builder --mac --arm64 --x64 --publish never",
+    "dist:mac:arm64": "electron-builder --mac --arm64 --publish never",
+    "dist:mac:x64": "electron-builder --mac --x64 --publish never",
+    "test:smoke": "node scripts/smoke-test.cjs",
+    "test": "node --test tests/*.test.cjs"
+  },
+  "devDependencies": {
+    "electron": "43.7.9",
+    "electron-builder": "26.15.3",
+    "playwright": "1.61.1"
+  },
+  "build": {
+    "appId": "com.electioncord.civitas",
+    "productName": "ElectionCord Civitas",
+    "asar": true,
+    "files": [
+      "main.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "web",
+        "to": "web",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.education",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "identity": "-",
+      "notarize": false
+    },
+    "artifactName": "ElectionCord-Civitas-${version}-${arch}-${os}.${ext}"
+  }
+}

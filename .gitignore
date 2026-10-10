@@ -1,0 +1,12 @@
+# Local artifacts and environment
+.DS_Store
+._*
+/releases/
+/builds/
+/archives/
+/dist/
+/node_modules/
+/.venv/
+/.cache/
+__pycache__/
+*.pyc
