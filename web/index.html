@@ -2374,37 +2374,47 @@ html, body {
     return s.center;
   }
 
-  function buildDistrictGeom(k, list) {
-    var items = [];
-    for (var m = 0; m < list.length; m++) {
-      var sh = list[m];
-      var biggest = 0;
-      for (var r = 0; r < sh.rings.length; r++) biggest = Math.max(biggest, ringArea(sh.rings[r]));
-      sh.drawSelf = biggest < MIN_RING_AREA;
-      items.push({ shape: sh, mp: sh.rings.map(function(ring) { return [ring]; }) });
-    }
-    var failedShapes = [];
-    var result = unionItems(items, failedShapes);
-    failedShapes.forEach(function(f) { f.drawSelf = true; });
-    if (failedShapes.length && window.console) console.warn('district ' + k + ': ' + failedShapes.length + ' shape(s) could not be merged into the outline');
-    if (!result) return null;
-    var paths = [new Path2D(), new Path2D(), new Path2D()];
-    var rings = [];
-    var bestArea = -1, label = null;
-    result.forEach(function(poly) {
-      poly.forEach(function(ring, ringIdx) {
-        var area = ringArea(ring);
-        if (area < MIN_RING_AREA) return;
-        var lods = [ring, decimateRing(ring, LOD_EPS[1]), decimateRing(ring, LOD_EPS[2])];
-        for (var l = 0; l < 3; l++) addRingToPath(paths[l], lods[l]);
-        rings.push({ outer: ringIdx === 0, lods: lods });
-        if (ringIdx === 0 && area > bestArea) {
-          bestArea = area;
-          label = ringCentroid(ring);
-        }
-      });
+  function shapeMultiPolygon(s) {
+    if (s._polygons) return s._polygons;
+    if (s._mp) return s._mp;
+    var rings = s.rings.slice().sort(function(a,b) { return ringArea(b)-ringArea(a); });
+    var entries = [], polys = [];
+    rings.forEach(function(ring) {
+      var containing = null;
+      entries.forEach(function(e) { if (pointInRing(ring[0][0],ring[0][1],e.ring) && (!containing || e.area < containing.area)) containing = e; });
+      var depth = containing ? containing.depth + 1 : 0;
+      var poly;
+      if (depth % 2 === 0) { poly = [ring]; polys.push(poly); }
+      else { poly = containing.poly; poly.push(ring); }
+      entries.push({ring:ring,area:ringArea(ring),depth:depth,poly:poly});
     });
-    return rings.length ? { paths: paths, rings: rings, label: label } : null;
+    s._mp = polys; return polys;
+  }
+
+  function geometryFromPolygons(result) {
+    var paths = [new Path2D(), new Path2D(), new Path2D()], rings = [], bestArea = -1, label = null;
+    result.forEach(function(poly) { poly.forEach(function(ring, ringIdx) {
+      var area = ringArea(ring);
+      if (area < MIN_RING_AREA) return;
+      var lods = [ring, decimateRing(ring, LOD_EPS[1]), decimateRing(ring, LOD_EPS[2])];
+      for (var l = 0; l < 3; l++) addRingToPath(paths[l], lods[l]);
+      rings.push({outer:ringIdx===0,lods:lods});
+      if (ringIdx===0 && area>bestArea) { bestArea=area;label=ringCentroid(ring); }
+    }); });
+    return {paths:paths,rings:rings,label:label};
+  }
+
+  function buildDistrictGeom(k, list) {
+    var polygons = list.map(function(sh) { sh.drawSelf=false;return shapeMultiPolygon(sh); });
+    var provisional = geometryFromPolygons(polygons.flat());
+    if (!editor || polygons.length < 2) return provisional;
+    provisional.pending = editor.unionGeometry(polygons).then(function(result) {
+      if (districtGeomCache[k] !== provisional) return;
+      districtGeomCache[k] = geometryFromPolygons(result);
+      anyBordersDirty = true;
+      computeDistrictBorders(); draw();
+    }).catch(function(error) { provisional.failed=true;editor.notice('District outline could not merge: '+error.message,true); });
+    return provisional;
   }
 
   function computeDistrictBorders() {
@@ -3273,6 +3283,7 @@ html, body {
     }
     if (paintPending) {
       paintPending = false;
+      if (isPainting && strokeShapes.length) { recomputeDistricts(); return; }
       changed = true;
     }
     if (changed) draw();
@@ -4094,7 +4105,9 @@ html, body {
     return p;
   }
 
+  var raceLoadToken = 0;
   function loadRace(race) {
+    var token = ++raceLoadToken;
     activeRace = race;
     applyRaceColors(race);
     loading.hidden = !!raceReadyKeys[race.key];
@@ -4112,6 +4125,7 @@ html, body {
       return fetchRaceRecords(race);
     })
     .then(function(records) {
+      if (token !== raceLoadToken) return;
       var noDataCount = 0;
       var countyCounts = {};
       {
@@ -4735,6 +4749,8 @@ html, body {
   }
 
   function resetGeography() {
+    if (editor) editor.initialize([]);
+    raceLoadToken++;
     shapes.length = 0;
     adjCache = null;
     setHoverShape(null);
@@ -4793,6 +4809,7 @@ html, body {
     fetch(versioned(currentState.dataDir + 'races.json'))
       .then(function(r) { return r.json(); })
       .then(function(index) {
+        if (currentState.key !== nextState.key) return;
         var allIndexRaces = index.races;
         var races = allIndexRaces.filter(function(r) { return r.group !== 'more'; });
         var moreRaces = allIndexRaces.filter(function(r) { return r.group === 'more'; });
@@ -4900,15 +4917,24 @@ html, body {
   // opts.readOnly: someone else's map opened from a shared link. Its site-wide id is payload.sid.
   async function applySavedPayload(name, payload, opts) {
     opts = opts || {};
+    var previous = currentState && editor.parents.length ? { state:currentState.key, count:districtCount, mode:districtColorMode, names:districtNames, locked:districtLocked, ...editor.exportState() } : null;
+    var previousName=mapNameInput.value,previousId=currentMapId,previousSid=currentSid,previousDirty=hasUnsavedChanges,previousReadOnly=mapReadOnly,previousHash=location.hash;
+    var switched=false;
     try {
+      if (editor.busy) throw new Error('Wait for the current map operation to finish.');
+      if (!STATES[payload.state || 'CA']) throw new Error('Unknown map geography');
+      if (payload.dataset && payload.dataset !== DATASET_ID) throw new Error('This map uses an unavailable dataset.');
+      if (!Number.isInteger(payload.count) || payload.count<0 || payload.count>1000) throw new Error('Invalid district count');
+      if (currentState && currentState.key === (payload.state || 'CA')) await editor.validatePayload(payload,name);
       if (payload.version && payload.version > 2) throw new Error('This map was created by a newer Civitas version.');
-      currentSid = payload.sid || null;
-      currentMapId = opts.readOnly ? null : (typeof payload.id === 'number' ? payload.id : allocateMapId());
-      location.hash = currentSid ? 'map=' + currentSid : 'draft=' + currentMapId;
-      openMap(payload.state || 'CA');
+      if (saveDraftTimer !== null) { clearTimeout(saveDraftTimer);saveDraftTimer=null; }
+      switched=true;openMap(payload.state || 'CA');
       await loadGeometry();
       activeDistrictId = null; editingDistrictId = null;
       await editor.restore(payload, name);
+      currentSid = payload.sid || null;
+      currentMapId = opts.readOnly ? null : (typeof payload.id === 'number' ? payload.id : allocateMapId());
+      location.hash = currentSid ? 'map=' + currentSid : 'draft=' + currentMapId;
       setReadOnly(!!opts.readOnly, name);
       hasUnsavedChanges = opts.draft ? !!payload.dirty : false;
       if (!payload.dataset && !opts.readOnly) {
@@ -4922,7 +4948,13 @@ html, body {
       }
       saveDraftNow(); await mapStorage.flush();
       return true;
-    } catch (error) { if (editor) editor.notice('Could not open this map: ' + error.message, true, true); return false; }
+    } catch (error) {
+      if (switched && previous) {
+        openMap(previous.state);await loadGeometry();await editor.restore(previous,previousName);
+        currentMapId=previousId;currentSid=previousSid;hasUnsavedChanges=previousDirty;location.hash=previousHash;setReadOnly(previousReadOnly,previousName);
+      }
+      if (editor) editor.notice('Could not open this map: ' + error.message, true, true); return false;
+    }
   }
 
   // Open the map behind a shared link (#map=<id>). The server says whether the viewer owns it.
@@ -5649,9 +5681,11 @@ html, body {
 
   // Download the districts as a GeoJSON file: one dissolved (merged) shape per district in standard lon/lat
   // coordinates, with its name, population and the open election's vote totals. Works for any map you can see.
-  function exportDistrictsGeoJSON() {
+  async function exportDistrictsGeoJSON() {
     if (!geoProj || !shapes.length) { alert('The map is still loading. Try again in a moment.'); return; }
     computeDistrictBorders();
+    await Promise.all(Object.values(districtGeomCache).map(function(g) { return g && g.pending; }));
+    if (Object.values(districtGeomCache).some(function(g) { return g && g.failed; })) { editor.notice('Export paused because an outline could not be merged.',true); return; }
     var extras = {};
     for (var i = 0; i < shapes.length; i++) {
       var sh = shapes[i];
@@ -5661,7 +5695,7 @@ html, body {
       var out = [];
       for (var p = 0; p < ring.length; p++) {
         var ll = geoProj.inv(ring[p][0], ring[p][1]);
-        out.push([Math.round(ll[0] * 1e5) / 1e5, Math.round(ll[1] * 1e5) / 1e5]);
+        out.push([Math.round(ll[0] * 1e7) / 1e7, Math.round(ll[1] * 1e7) / 1e7]);
       }
       var a = out[0], b = out[out.length - 1];
       if (a[0] !== b[0] || a[1] !== b[1]) out.push([a[0], a[1]]);
@@ -5693,6 +5727,8 @@ html, body {
       if (!polys.length) return;
       var st = districtStats[k] || zeroStats();
       var props = { district: k, name: districtLabel(k), units: st.count || 0, population: Math.round(st.balancePop || 0), population_basis: populationBasis, census_population: st.pop20, california_adjusted_population: st.pop20Adjusted, acs_population: st.pop };
+      Object.keys(st).forEach(function(key) { if (typeof st[key] === 'number') props[key] = st[key]; });
+      props.dataset = DATASET_ID; props.analysis_estimates = true;
       if (activeRace) {
         props.election = activeRace.year + ' ' + activeRace.label;
         props.dem_votes = Math.round(st.dem || 0);
@@ -5765,10 +5801,11 @@ html, body {
     changed: function() { hasUnsavedChanges = true; },
     persist: saveDraft,
     refresh: recomputeDistricts,
+    geometryChanged: function() { markAllBordersDirty(); computeDistrictBorders(); draw(); },
     redraw: draw,
     zoom: function(b) { var cx=(b[0]+b[2])/2,cy=(b[1]+b[3])/2,w=Math.max(b[2]-b[0],2)*1.15,h=Math.max(b[3]-b[1],2)*1.15; var aspect=canvas.clientWidth/canvas.clientHeight; if(w/h>aspect)h=w/aspect;else w=h*aspect;view={x:cx-w/2,y:cy-h/2,w:w,h:h};draw(); }
   });
-  window.CivitasApp = { editor: editor, save: saveCurrentMap, storage: mapStorage, restore: applySavedPayload, worldToScreen: function(x,y) { var r=canvas.getBoundingClientRect(),scale=baseScale*(base.w/view.w);return [r.left+offX+(x-view.x)*scale,r.top+offY+(y-view.y)*scale]; }, getShapes: function() { return shapes; }, getStats: function() { return { districts: districtStats, totals: mapTotals, basis: populationBasis }; } };
+  window.CivitasApp = { ready: async function() { await loadGeometry(); await editor.ready; }, editor: editor, save: saveCurrentMap, storage: mapStorage, restore: applySavedPayload, worldToScreen: function(x,y) { var r=canvas.getBoundingClientRect(),scale=baseScale*(base.w/view.w);return [r.left+offX+(x-view.x)*scale,r.top+offY+(y-view.y)*scale]; }, getShapes: function() { return shapes; }, getStats: function() { return { districts: districtStats, totals: mapTotals, basis: populationBasis }; } };
 
   renderHomeSavedList();
   restoreFromHash();

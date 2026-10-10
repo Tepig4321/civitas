@@ -1,7 +1,7 @@
 {
   "name": "electioncord-civitas",
   "productName": "ElectionCord Civitas",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "ElectionCord's Civitas: redistricting and election analysis, as a desktop app.",
   "author": "ElectionCord",
   "main": "main.js",
@@ -16,7 +16,12 @@
     "dist:mac:arm64": "electron-builder --mac --arm64 --publish never",
     "dist:mac:x64": "electron-builder --mac --x64 --publish never",
     "test:smoke": "node scripts/smoke-test.cjs",
-    "test": "node --test tests/*.test.cjs"
+    "test": "node --test tests/*.test.cjs",
+    "test:editor": "node scripts/editor-smoke.cjs",
+    "data:fetch": ".venv/bin/python scripts/fetch-geodata.py",
+    "data:build": ".venv/bin/python scripts/build-block-data.py --resume",
+    "data:validate": ".venv/bin/python scripts/validate-block-data.py",
+    "dist:win": "electron-builder --win --x64 --publish never"
   },
   "devDependencies": {
     "electron": "43.7.9",
@@ -49,6 +54,10 @@
       "identity": "-",
       "notarize": false
     },
-    "artifactName": "ElectionCord-Civitas-${version}-${arch}-${os}.${ext}"
+    "artifactName": "ElectionCord-Civitas-${version}-${arch}-${os}.${ext}",
+    "win": {
+      "target": "zip",
+      "signAndEditExecutable": false
+    }
   }
 }

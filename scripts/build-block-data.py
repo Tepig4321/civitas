@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pyogrio.raw
 from pyproj import Transformer
-from shapely import STRtree,from_wkb,make_valid,union_all,intersection,difference
+from shapely import STRtree,from_wkb,make_valid,union_all,intersection,difference,set_precision
 from shapely.geometry import Polygon,MultiPolygon,GeometryCollection,mapping
 from shapely.ops import transform
 
@@ -43,7 +43,7 @@ def polygons(geom):
  return []
 
 def clean(geom):
- ps=polygons(make_valid(geom));return union_all(ps) if ps else Polygon()
+ ps=polygons(make_valid(geom));return set_precision(union_all(ps),.001) if ps else Polygon()
 
 def projection(p):
  d=math.pi/180;n=(math.sin(p['lat1']*d)+math.sin(p['lat2']*d))/2
@@ -81,10 +81,10 @@ def partition(geom,tree,geoms,ids):
  # Stable order handles any overlapping/simplified legacy footprints deterministically.
  for i in sorted(candidates,key=lambda i:ids[i]):
   if remaining.is_empty:break
-  part=clean(intersection(remaining,geoms[i]))
+  part=clean(intersection(remaining,geoms[i],grid_size=.001))
   if part.area<=1e-8:continue
   yield ids[i],part
-  remaining=clean(difference(remaining,part))
+  remaining=clean(difference(remaining,part,grid_size=.001))
  if remaining.area>1e-8:yield None,remaining
 
 def source_tables():
@@ -111,17 +111,17 @@ def source_tables():
 def prepare_elections():
  dest=CACHE/'election-counties';dest.mkdir(exist_ok=True)
  for year in ['16','18','20','22','24']:
-  if (dest/f'g{year}-ready').exists():continue
+  if (dest/f'g{year}-fips-ready').exists():continue
   z=zipfile.ZipFile(CACHE/f'g{year}-votes.zip');name=next(n for n in z.namelist() if n.endswith('.csv') and 'headers' not in n)
   with z.open(name) as f:frame=pd.read_csv(f,dtype=str,keep_default_na=False)
-  countycol='COUNTY20' if 'COUNTY20' in frame.columns else 'COUNTY'
-  for county,part in frame.groupby(countycol):part.to_pickle(dest/f'{int(county):03d}-g{year}.pkl')
-  (dest/f'g{year}-ready').touch()
+  countycol='COUNTY20' if 'COUNTY20' in frame.columns else 'FIPS'
+  for county,part in frame.groupby(countycol):part.to_pickle(dest/f'{str(county)[-3:].zfill(3)}-g{year}.pkl')
+  (dest/f'g{year}-fips-ready').touch()
  for year in ['22','24']:
-  if (dest/f'g{year}-map-ready').exists():continue
+  if (dest/f'g{year}-fips-map-ready').exists():continue
   frame=pd.read_csv(CACHE/f'g{year}-block-map.csv',dtype=str,keep_default_na=False)
-  for county,part in frame.groupby('COUNTY'):part.to_pickle(dest/f'{int(county):03d}-g{year}-map.pkl')
-  (dest/f'g{year}-map-ready').touch()
+  for county,part in frame.groupby('FIPS'):part.to_pickle(dest/f'{str(county)[-3:].zfill(3)}-g{year}-map.pkl')
+  (dest/f'g{year}-fips-map-ready').touch()
 
 def norm(text):return re.sub(r'[^a-z0-9]','',str(text).lower().split('(')[0].replace('*',''))
 
@@ -158,7 +158,7 @@ def vote_specs(race,year,columns,book):
  return [dem],[rep],others,district
 
 def race_block_votes(county,races):
- result={};dest=CACHE/'election-counties'
+ result={};audit={};dest=CACHE/'election-counties'
  for year in ['16','18','20','22','24']:
   p=dest/f'{county}-g{year}.pkl'
   if not p.exists():continue
@@ -166,7 +166,8 @@ def race_block_votes(county,races):
   for race in races:
    if str(race['year'])!='20'+year:continue
    spec=vote_specs(race,year,df.columns,book)
-   if not spec:continue
+   if not spec:
+    audit[race['key']]={'method':'precinct fallback','reason':'No matching block contest','sourceTotals':[0,0,0]};continue
    d,r,others,cd=spec;data=df
    if cd is not None:
     c='CNG_DIST' if 'CNG_DIST' in data else 'CDDIST'
@@ -178,18 +179,24 @@ def race_block_votes(county,races):
     result[race['key']]={bid:values for bid,values in zip(data['BLOCK20'],counts)}
    else:
     cross=pd.read_pickle(dest/f'{county}-g{year}-map.pkl');groups={str(k):v for k,v in cross.groupby('SRPREC')};blocks=defaultdict(lambda:np.zeros(3,dtype=np.int64))
+    missing=[]
     for precinct,totals in zip(data['SRPREC'],counts):
      rows=groups.get(str(precinct))
-     if rows is None:continue
+     if rows is None:
+      if any(totals):missing.append({'precinct':str(precinct),'votes':[int(n) for n in totals]})
+      continue
      weights=pd.to_numeric(rows['PCTSRPREC'],errors='coerce').fillna(0).to_numpy();bids=rows['BLOCK_KEY'].tolist()
      for side,total in enumerate(totals):
       for bid,n in zip(bids,allocate(total,weights)):blocks[bid][side]+=n
+    if missing:
+     audit[race['key']]={'method':'precinct fallback','reason':'Incomplete registration crosswalk','sourceTotals':[0,0,0],'unmatched':missing};continue
     result[race['key']]=dict(blocks)
- return result
+   audit[race['key']]={'method':'block allocation','sourceTotals':[int(n) for n in counts.sum(axis=0)]}
+ return result,audit
 
 def build_county(county,slug,name,pop,races,city_records,city_geoms):
  print('Building',name,flush=True)
- parents={};proj={};geoms={};trees={};ids={};sourceBG={}
+ parents={};proj={};geoms={};trees={};ids={};sourceBG={};max_area_error=0
  for geo in GEO:
   directory=WEB/'data'/geo/'geometry';manifest=json.loads((directory/'manifest.json').read_text());inv,fwd=projection(manifest['projection']);proj[geo]=fwd
   records=json.loads((directory/f'precincts-{slug}.json').read_text())['records'];parents[geo]={r['county']+'|'+str(r['precinct']):dict(r) for r in records}
@@ -215,6 +222,8 @@ def build_county(county,slug,name,pop,races,city_records,city_geoms):
      for g,k in a['parents'].items():parent_groups[g][k].append(i)
   indices=list(range(start,len(atoms)));areas=[atom_geoms[i].area for i in indices]
   if not indices:raise RuntimeError('Missing geography for block '+bid)
+  area_error=abs(sum(areas)-block.area);max_area_error=max(max_area_error,area_error)
+  if area_error>max(.01,block.length*.004,block.area*1e-8):raise RuntimeError('Overlay does not conserve block area: '+bid+' error '+str(area_error))
   counts=pop.loc[bid]
   for key in ['pop20','vap20','pop20Adjusted']:
    for i,v in zip(indices,allocate(counts[key],areas)):atoms[i]['stats'][key]=int(v)
@@ -232,39 +241,44 @@ def build_county(county,slug,name,pop,races,city_records,city_geoms):
   for i in indices:
    hh=atoms[i]['stats'].get('inc_total',0);median=source.get('inc_med',0)
    atoms[i]['stats']['inc_medhh']=hh if median>0 else 0;atoms[i]['stats']['inc_medw']=hh*median
- block_votes=race_block_votes(county,races)
+ block_votes,election_audit=race_block_votes(county,races)
  for racekey,values in block_votes.items():
   for bid,totals in values.items():
    indices=block_groups.get(bid)
-   if not indices:continue
-   areas=[atom_geoms[i].area for i in indices]
+   if not indices:
+    if not any(totals):continue
+    election_audit[racekey].setdefault('unlocatedBlocks',[]).append({'block':bid,'votes':[int(n) for n in totals]})
+    indices=list(range(len(atoms)));areas=[atoms[i]['stats']['vap20'] for i in indices]
+   else:areas=[atom_geoms[i].area for i in indices]
    sides=[allocate(int(total),areas) for total in totals]
    for n,i in enumerate(indices):
     votes=[int(side[n]) for side in sides]
-    if any(votes):atoms[i]['votes'][racekey]=votes
+    if any(votes):atoms[i]['votes'][racekey]=[n+old for n,old in zip(votes,atoms[i]['votes'].get(racekey,[0,0,0]))]
  # Preserve RDH's corrected Madera 2024 data and explicitly allocated fallbacks for unmatched contests.
  for race in races:
   key=race['key'];path=WEB/'data/CA'/key/f'votes-{slug}.json'
   if not path.exists():continue
   if key in block_votes and not (county=='039' and str(race['year'])=='2024'):continue
   records=json.loads(path.read_text())['records']
-  if county=='039' and str(race['year'])=='2024':
-   for a in atoms:a['votes'].pop(key,None)
+  election_audit[key]={'method':'precinct fallback','reason':election_audit.get(key,{}).get('reason','Corrected Madera 2024'),**({'unmatched':election_audit[key]['unmatched']} if election_audit.get(key,{}).get('unmatched') else {}),'sourceTotals':[sum(rec.get(side,0) for rec in records) for side in ['dem','rep','other']]}
+  for a in atoms:a['votes'].pop(key,None)
   for rec in records:
    indices=parent_groups['CA'].get(rec['county']+'|'+str(rec['precinct']),[])
-   if not indices:continue
+   if not indices:
+    footprint=geoms['CA'][ids['CA'].index(rec['county']+'|'+str(rec['precinct']))]
+    atomtree=STRtree(atom_geoms)
+    indices=[int(i) for i in atomtree.query(footprint,predicate='intersects')]
+    if not indices:indices=list(range(len(atoms)))
    weights=[atoms[i]['stats']['vap20'] for i in indices]
    if not sum(weights):weights=[atoms[i]['stats']['pop20'] for i in indices]
    if not sum(weights):weights=[atom_geoms[i].area for i in indices]
    sides=[allocate(rec.get(side,0),weights) for side in ['dem','rep','other']]
    for n,i in enumerate(indices):
     votes=[int(side[n]) for side in sides]
-    if any(votes):atoms[i]['votes'][key]=votes
-  if county=='039' and str(race['year'])=='2024':
-   # Remove uncorrected SWDB values from atoms whose corrected source has no result.
-   covered={i for rec in records for i in parent_groups['CA'].get(rec['county']+'|'+str(rec['precinct']),[])}
-   for i,a in enumerate(atoms):
-    if i not in covered:a['votes'].pop(key,None)
+    if any(votes):atoms[i]['votes'][key]=[n+old for n,old in zip(votes,atoms[i]['votes'].get(key,[0,0,0]))]
+ # Retain empty/shadowed legacy IDs for migration; they have no paintable footprint.
+ for geo in GEO:
+  for key in parents[geo]:parent_groups[geo].setdefault(key,[])
  summaries={};city_parents={g:defaultdict(set) for g in GEO}
  for geo in GEO:
   summaries[geo]=[]
@@ -272,7 +286,7 @@ def build_county(county,slug,name,pop,races,city_records,city_geoms):
    rec=parents[geo].get(key,{'precinct':'Unmapped census blocks','county':name})
    # Reconstruct the exact partition footprint, so parent and child exports agree.
    footprint=union_all([atom_geoms[i] for i in indices]);rec['d']=paths(footprint,proj[geo])
-   xys=transform(proj[geo],transform(TO_LL,footprint)).bounds;rec['bbox']=list(xys)
+   xys=transform(proj[geo],transform(TO_LL,footprint)).bounds;rec['bbox']=list(xys) if indices else rec['bbox'];rec['empty']=not bool(indices)
    for field in statkeys:rec[field]=sum(atoms[i]['stats'].get(field,0) for i in indices)
    rec['inc_med']=rec['inc_medw']/rec['inc_medhh'] if rec['inc_medhh'] else 0
    rec['atomCount']=len(indices);rec['atomFile']=f'data/block-v1/atoms/{slug}.json.gz'
@@ -289,7 +303,7 @@ def build_county(county,slug,name,pop,races,city_records,city_geoms):
  for a in atoms:
   a['stats']=[a['stats'].get(k,0) for k in statkeys];a.pop('houses',None)
  write_json(OUT/'atoms'/f'{slug}.json.gz',{'statKeys':statkeys,'atoms':atoms,'parents':{g:dict(groups) for g,groups in parent_groups.items()}},True)
- report={'county':county,'slug':slug,'blocks':len(blockids),'atoms':len(atoms),'population':sum(rec['pop20'] for rec in summaries['CA']),'adjustedPopulation':sum(rec['pop20Adjusted'] for rec in summaries['CA']),'cityParents':{g:{k:sorted(v) for k,v in cities.items()} for g,cities in city_parents.items()}}
+ report={'buildRevision':3,'elections':election_audit,'precisionMetres':.001,'maxBlockAreaErrorSquareMetres':max_area_error,'county':county,'slug':slug,'blocks':len(blockids),'atoms':len(atoms),'population':sum(rec['pop20'] for rec in summaries['CA']),'adjustedPopulation':sum(rec['pop20Adjusted'] for rec in summaries['CA']),'cityParents':{g:{k:sorted(v) for k,v in cities.items()} for g,cities in city_parents.items()}}
  assert report['population']==int(pop.loc[blockids,'pop20'].sum())
  for g in GEO:
   assert sum(r['pop20'] for r in summaries[g])==report['population']
@@ -305,7 +319,14 @@ def finalize(slugs,races,city_records,city_geoms):
   (OUT/geo/'geometry/counties.json').write_bytes((old/'geometry/counties.json').read_bytes())
   updated=[]
   for race in races:
-   race=dict(race);race['manifest']=f'data/block-v1/{geo}/{race["key"]}/manifest.json';updated.append(race)
+   race=dict(race)
+   totals=[0,0,0]
+   for slug in slugs:
+    for rec in json.loads((OUT/geo/race['key']/f'votes-{slug}.json').read_text())['records']:
+     for i,side in enumerate(['dem','rep','other']):totals[i]+=rec[side]
+   two=totals[0]+totals[1];margin=(totals[0]-totals[1])/two if two else 0
+   race.update(margin=margin,winner='dem' if margin>0 else 'rep' if margin<0 else None,marginText=('D+' if margin>0 else 'R+')+str(round(abs(margin)*100)) if two else '—')
+   race['manifest']=f'data/block-v1/{geo}/{race["key"]}/manifest.json';updated.append(race)
    write_json(OUT/geo/race['key']/'manifest.json',{'files':[f'votes-{s}.json' for s in slugs]})
   write_json(OUT/geo/'races.json',{'races':updated})
   inv,fwd=projection(manifest['projection']);citylist=[]
@@ -315,7 +336,7 @@ def finalize(slugs,races,city_records,city_geoms):
    citylist.append({**city,'parents':parents,'d':paths(geom,fwd),'bbox':list(transform(fwd,transform(TO_LL,geom)).bounds)})
   write_json(OUT/geo/'cities.json',{'records':citylist})
  sources=json.loads((CACHE/'sources.json').read_text())
- write_json(OUT/'manifest.json',{'id':DATASET,'version':1,'counties':slugs,'population':sum(r['population'] for r in reports),'adjustedPopulation':sum(r['adjustedPopulation'] for r in reports),'blocks':sum(r['blocks'] for r in reports),'atoms':sum(r['atoms'] for r in reports),'sources':sources,'allocation':'Official block counts; published historical block election allocations; 2022/2024 SR-precinct registration-share crosswalks. Other fields allocated from existing ACS block-group data; geometric fragments use equal-area proportions. Madera 2024 preserves corrected RDH source. Fallback contests use existing precinct results with VAP weights.'})
+ write_json(OUT/'manifest.json',{'id':DATASET,'version':1,'counties':slugs,'population':sum(r['population'] for r in reports),'adjustedPopulation':sum(r['adjustedPopulation'] for r in reports),'blocks':sum(r['blocks'] for r in reports),'atoms':sum(r['atoms'] for r in reports),'sources':sources,'allocation':'Official block counts; published historical block election allocations; 2022/2024 SR-precinct registration-share crosswalks. Other fields allocated from existing ACS block-group data; geometric fragments use equal-area proportions. Madera 2024 preserves corrected RDH source. Fallback contests use existing precinct results with VAP weights; unlocated source-block placeholders are distributed within their county using VAP. Per-county audit records identify these estimates.'})
 
 if __name__=='__main__':
  parser=argparse.ArgumentParser();parser.add_argument('--counties',nargs='*');parser.add_argument('--resume',action='store_true');args=parser.parse_args()
@@ -333,6 +354,7 @@ if __name__=='__main__':
   rec=json.loads(p.read_text())['records'][0];county=str(rec['precinct'])[2:5];mapping_county[p.stem.removeprefix('precincts-')]=(county,rec['county'])
  slugs=args.counties or list(mapping_county)
  for slug in slugs:
-  if args.resume and (OUT/'reports'/f'{slug}.json').exists():continue
+  if args.resume and (OUT/'reports'/f'{slug}.json').exists():
+   if json.loads((OUT/'reports'/f'{slug}.json').read_text()).get('buildRevision')==3:continue
   county,name=mapping_county[slug];build_county(county,slug,name,pop,races,cities,city_geoms)
  finalize(slugs,races,cities,city_geoms)

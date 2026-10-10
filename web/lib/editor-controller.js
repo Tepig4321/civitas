@@ -8,7 +8,7 @@
     const request=data=>new Promise((resolve,reject)=>{const id=++serial;pending.set(id,{resolve,reject});worker.postMessage({...data,id});});
     let parents=[],index={},cities=[],cityIndex=null,shapeIndex=null,citiesReady=Promise.resolve();
     let opened=null,hoverCity=null,pointer=[0,0],history=new History(),before=null,label='',generation=0,busy=false;
-    let statKeys=[],merged=new Map(),merging=new Set(),viewToken=0;
+    let statKeys=[],merged=new Map(),merging=new Set(),viewToken=0,visibleRecords=[];
     const status=document.getElementById('editor-status'),done=document.getElementById('block-done');
     let statusTimer=null;
     function notice(text,error=false,lasting=false) {
@@ -85,7 +85,7 @@
       if(atoms.length===1&&opened===p)return atoms[0];
       const values=aggregate(atoms,statKeys),rings=atoms.flatMap(a=>a.rings),signature=atoms.map(a=>a.id).join(',');
       const cached=merged.get(signature);
-      const g={...values,county:p.county,precinct:blockId?'Block '+blockId.slice(-4):p.precinct+' · '+(key==='null'?'unassigned':'District '+key),districtId:atoms[0].districtId,rings:cached?cached.flat():rings,paths:[null,null,null],_parent:p,_atoms:atoms,_signature:signature,blockId,estimated:atoms.some(a=>a.estimated),fill:'#e3e5e9'};
+      const g={...values,county:p.county,precinct:blockId?'Block '+blockId.slice(-4):p.precinct+' · '+(key==='null'?'unassigned':'District '+key),districtId:atoms[0].districtId,_polygons:cached||atoms.flatMap(a=>a._polygons),rings:cached?cached.flat():rings,paths:[null,null,null],_parent:p,_atoms:atoms,_signature:signature,blockId,estimated:atoms.some(a=>a.estimated),fill:'#e3e5e9'};
       g.bbox=bbox(g.rings);g.bboxArea=(g.bbox[2]-g.bbox[0])*(g.bbox[3]-g.bbox[1]);
       if(!cached&&!merging.has(signature)) {
         merging.add(signature);const token=generation;
@@ -93,7 +93,8 @@
           merging.delete(signature);if(token!==generation)return;
           merged.set(signature,data.groups.shape);if(merged.size>512)merged.delete(merged.keys().next().value);
           // Ring replacement is presentation only; never add it to history or change totals.
-          if(g._signature===signature){g.rings=data.groups.shape.flat();g.paths=[null,null,null];bridge.redraw();}
+          for(const current of visibleRecords)if(current._signature===signature){current._polygons=data.groups.shape;current.rings=data.groups.shape.flat();current.paths=[null,null,null];}
+          if(bridge.geometryChanged)bridge.geometryChanged();else bridge.redraw();
         }).catch(error=>{merging.delete(signature);notice(error.message,true);});
       }
       return g;
@@ -112,7 +113,7 @@
           p.districtId=p._children[0].districtId;visible.push(p);
         }else for(const [key,atoms] of groups)visible.push(groupShape(p,atoms,String(atoms[0].districtId),opened===p?atoms[0].blockId:null));
       }
-      shapeIndex=new SpatialIndex(visible);bridge.shapes(visible);viewToken++;updates();
+      visibleRecords=visible;shapeIndex=new SpatialIndex(visible);bridge.shapes(visible);viewToken++;updates();
     }
     function closeBlocks() {if(!opened)return;opened=null;sync();bridge.refresh();}
     async function openBlocks(p) {
@@ -159,7 +160,7 @@
       }
       return changed;
     }
-    async function applySnapshot(state) {
+    async function validateSnapshot(state) {
       if(!Number.isInteger(state.meta.count)||state.meta.count<0||state.meta.count>1000)throw new Error('Invalid district count');
       if(!['census','adjusted'].includes(state.meta.basis))throw new Error('Invalid population basis');
       for(const id of Object.keys(state.assignments))if(!index[id])throw new Error('Unknown map unit: '+id);
@@ -178,6 +179,9 @@
           }
         }
       }
+    }
+    async function applySnapshot(state) {
+      await validateSnapshot(state);
       for(const p of parents) {
         const saved=state.assignments[p._id]||{district:null,overrides:{}};
         p.districtId=saved.district??null;
@@ -193,23 +197,32 @@
       try{await applySnapshot(next);bridge.changed();bridge.persist();notice(direction==='undo'?'Undone':'Redone');}
       catch(error){history.cursor=oldCursor;notice(error.message,true);}finally{busy=false;updates();}
     }
-    async function restore(payload,name) {
+    function payloadState(payload,name) {
+      if(payload.version&&payload.version>2)throw new Error('Unsupported map version');
       if(payload.dataset&&payload.dataset!==bridge.dataset())throw new Error('This map uses an unavailable dataset.');
       const assignments=payload.unitAssignments||Object.fromEntries(Object.entries(payload.assignments||{}).map(([id,district])=>[id,{district,overrides:{}}]));
       for(const id of Object.keys(assignments))if(!index[id])throw new Error('Map geography could not be matched: '+id);
-      const state={assignments,meta:{count:payload.count,mode:payload.mode||'by-district',name,basis:payload.populationBasis||'census'},names:payload.names||{},locked:payload.locked||{}};
-      opened=null;before=null;history=new History(payload.history);await applySnapshot(state);updates();
+      return {assignments,meta:{count:payload.count,mode:payload.mode||'by-district',name,basis:payload.populationBasis||'census'},names:payload.names||{},locked:payload.locked||{}};
+    }
+    async function restore(payload,name) {
+      const state=payloadState(payload,name),restoredHistory=new History(payload.history);
+      busy=true;updates();
+      try {await applySnapshot(state);opened=null;before=null;history=restoredHistory;sync();}
+      finally {busy=false;updates();}
       if(!payload.dataset)notice('Map upgraded: district totals now use 2020 Census blocks. An original recovery copy is retained.');
     }
     const api={
       initialize(records){generation++;parents=records.slice();index=Object.fromEntries(parents.map(p=>[p._id,p]));statKeys=bridge.statKeys();opened=null;cities=[];cityIndex=null;hoverCity=null;merged.clear();merging.clear();before=null;history=new History();sync();
+        if(!parents.length){citiesReady=Promise.resolve();return;}
         const token=generation;citiesReady=bridge.fetchCities().then(doc=>{if(token!==generation)return;cities=doc.records.map(c=>({...c,rings:bridge.parse(c.d),paths:[null,null,null]}));cityIndex=new SpatialIndex(cities);bridge.redraw();});citiesReady.catch(error=>notice('City boundaries could not load: '+error.message,true));},
       resetMap(){opened=null;before=null;history=new History();for(const p of parents){p.districtId=null;if(p._children)for(const a of p._children)a.districtId=null;}bridge.setBasis('census');sync();},
       apply,sync,begin,finish,closeBlocks,snapshot,restore,notice,undoRedo,openBlocks,paintCity,
+      validatePayload:(payload,name)=>validateSnapshot(payloadState(payload,name)),
+      unionGeometry:async polygons=>(await request({operation:'union',groups:{shape:polygons}})).groups.shape,
       pickCandidates:(x,y)=>shapeIndex?shapeIndex.at(x,y):null,
       pointer(x,y){pointer=[x,y];const previous=hoverCity;hoverCity=null;if(cityIndex)for(const c of cityIndex.at(x,y)){if(bridge.contains(c,x,y)){hoverCity=c;break;}}if(previous!==hoverCity&&bridge.paintBy()==='city')bridge.redraw();},
       overlay(ctx,scale){if(bridge.paintBy()==='city'||document.getElementById('show-city-borders').checked){ctx.strokeStyle='#24cbd1';ctx.lineWidth=1.2/scale;for(const c of cities){if(hoverCity===c&&bridge.paintBy()==='city'){ctx.fillStyle='rgba(36,203,209,.14)';ctx.fill(bridge.path(c));ctx.lineWidth=2.5/scale;}ctx.stroke(bridge.path(c));ctx.lineWidth=1.2/scale;}}if(opened){ctx.strokeStyle='#24cbd1';ctx.lineWidth=2.5/scale;ctx.stroke(bridge.path(opened));}},
-      endStroke(){sync();finish();},
+      endStroke(){sync();finish();bridge.refresh();},
       metadataChanged(text,fn){if(busy||bridge.readOnly()){updates();return;}begin(text);fn();sync();finish();bridge.refresh();},
       reduceCount(n){for(const p of parents){if(p.districtId>n)p.districtId=null;if(p._children)for(const a of p._children)if(a.districtId>n)a.districtId=null;}},
       exportState(){const state=snapshot();return {version:2,dataset:bridge.dataset(),populationBasis:state.meta.basis,unitAssignments:state.assignments,history:history.persistent()};},

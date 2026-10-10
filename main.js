@@ -111,8 +111,8 @@ function createWindow() {
 }
 
 function buildMenu() {
-  const historyAction = direction => async () => {
-    const window = BrowserWindow.getFocusedWindow();
+  const historyAction = direction => async (_item, selectedWindow) => {
+    const window = selectedWindow || BrowserWindow.getFocusedWindow() || mainWindow;
     if (!window) return;
     const editing = await window.webContents.executeJavaScript("!!document.activeElement?.closest('input,textarea,[contenteditable=\"true\"]')");
     if (editing) window.webContents[direction]();

@@ -61,7 +61,7 @@
             for(const [k,v] of entries){if(v===null)values.delete(k);else values.set(k,String(v));}
           });
           queue=operation.catch(report);
-          await operation;
+          try { await operation; } catch(error) { if(failure===error)failure=null;throw error; }
         }
       };
     }
