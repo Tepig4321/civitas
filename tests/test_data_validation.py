@@ -25,5 +25,10 @@ class DataValidationTests(unittest.TestCase):
  def test_rejects_changed_parent_election_total(self):
   path=self.out/'CA/president-2024/votes-alpine.json';doc=json.loads(path.read_text())
   doc['records'][0]['dem']+=1;path.write_text(json.dumps(doc));self.rejected()
+ def test_rejects_overlapping_atom_geometry_without_count_changes(self):
+  path=self.out/'atoms/alpine.json.gz';doc=json.loads(gzip.decompress(path.read_bytes()))
+  visible=[a for a in doc['atoms'] if a['polygons']]
+  visible[1]['polygons']=visible[0]['polygons']
+  path.write_bytes(gzip.compress(json.dumps(doc).encode()));self.rejected()
 
 if __name__=='__main__':unittest.main()

@@ -35,6 +35,8 @@ To incorporate the original repository's updates into the fork, fetch `upstream`
 
 Use `npm run dist:mac` or `npm run dist:win` after validation. Run `npm run release:checksums` after packaging to write `dist/SHA256SUMS.txt`. Verify a local package with `npm run test:smoke -- /path/to/executable`. Builds remain local and ad-hoc signed/unsigned; publishing and release signing are separate owner-controlled steps.
 
+Existing revision-3 county data can receive matching shared edges with `npm run data:repair:geometry`. This changes geometry and parent outlines while preserving atom IDs, parent/city memberships and every numeric value. It keeps the original county files in `.cache/geometry-before-repair/` and marks a county complete only after its writes finish. The full audit requires geometry revision 2, valid serialized polygons, matching edges, agreement with the Census source footprint and no nonzero statistics on empty fragments. A previous release certificate is invalid after this change; rerun `npm run data:validate`.
+
 ## Performance work
 
 `npm run benchmark:render -- . label` records the existing dense Los Angeles canvas benchmark with runtime, hardware, dataset hashes, raw samples and process-memory observations in `dist/benchmarks/`. Compare runs on the same machine, viewport and dataset with other heavy jobs stopped. It measures synchronous canvas rendering after initialization with synthetic election colors; it does not measure startup, block decoding, city edits or end-to-end input latency.

@@ -13,12 +13,13 @@ import numpy as np
 import pandas as pd
 import pyogrio.raw
 from pyproj import Transformer
-from shapely import STRtree,from_wkb,make_valid,union_all,intersection,difference,set_precision
-from shapely.geometry import Polygon,MultiPolygon,GeometryCollection,mapping
+from shapely import STRtree,from_wkb,make_valid,union_all,intersection,difference,set_precision,coverage_clean,coverage_is_valid
+from shapely.geometry import Polygon,MultiPolygon,GeometryCollection,mapping,box
 from shapely.ops import transform
 
 ROOT=Path(__file__).resolve().parents[1];CACHE=ROOT/'.cache/geodata';WEB=ROOT/'web';OUT=WEB/'data/block-v1'
 DATASET='ca-blocks-2020-cities-2025-v1'
+GEOMETRY_REVISION=2
 GEO=['CA','CA-BG'];TO_M=Transformer.from_crs(4269,3310,always_xy=True).transform;TO_LL=Transformer.from_crs(3310,4269,always_xy=True).transform
 RACE_PREFIX={'president':'PRS','senate':'USS','governor':'GOV','lieutenant-governor':'LTG','attorney-general':'ATG','secretary-of-state':'SOS','controller':'CON','treasurer':'TRS','insurance-commissioner':'INS','superintendent':'SPI','house':'CNG'}
 
@@ -76,6 +77,76 @@ def paths(geom,fwd):
 
 def ll_polys(geom):
  return [[[ [round(x,7),round(y,7)] for x,y in ring.coords] for ring in [p.exterior,*p.interiors]] for p in polygons(transform(TO_LL,geom))]
+
+def polygonal(geom):
+ parts=polygons(make_valid(geom))
+ return union_all(parts) if parts else Polygon()
+
+def decode_polygons(value):
+ parts=[part for poly in value for part in polygons(make_valid(Polygon(poly[0],poly[1:])))]
+ return union_all(parts) if parts else Polygon()
+
+def encode_polygons(geom):
+ # Shared vertices must retain identical doubles, including newly noded intersections.
+ return [[[[x,y] for x,y in ring.coords] for ring in [p.exterior,*p.interiors]] for p in polygons(geom)]
+
+def validate_coverage_footprint(geoms,source_geoms,boundary_tolerance=1e-8):
+ source=polygonal(union_all(source_geoms));footprint=union_all(geoms)
+ # Matching edges alone allow holes. Ignore only sub-millimetre movement along
+ # existing source boundaries, never an interior void or a filled source hole.
+ missing=source.buffer(-boundary_tolerance).difference(footprint).area
+ excess=footprint.difference(source.buffer(boundary_tolerance)).area
+ if max(missing,excess)>1e-14:raise RuntimeError('Geometry does not conserve the source footprint: '+str((missing,excess)))
+
+def repair_coverage(geoms,source_geoms,gap_width=2e-7,snapping_distance=1e-9):
+ """Node shared edges and repair only gaps inside the authoritative source coverage.
+
+ Work on the actual serialized lon/lat coordinates, after independent overlays and
+ seven-decimal rounding. A background polygon occupies the source's exterior and
+ holes, protecting legitimate water gaps/enclaves from the narrow-gap repair.
+ The small snapping distance resolves floating-point coincidences, not a new grid.
+ """
+ source=polygonal(union_all(source_geoms))
+ if source.is_empty:raise RuntimeError('Empty source coverage')
+ x0,y0,x1,y1=source.bounds
+ background=polygonal(box(x0-1,y0-1,x1+1,y1+1).difference(source))
+ fixed=coverage_clean([polygonal(g) for g in geoms]+[background],gap_width=gap_width,snapping_distance=snapping_distance)[:-1]
+ # Independently projected straight source segments can bow slightly in lon/lat.
+ # Align the county exterior/real holes back to the source and give each residual
+ # border sliver to its adjacent atom, with a hard bound against missing data.
+ fixed=[polygonal(g.intersection(source)) for g in fixed]
+ missing=polygonal(source.difference(union_all(fixed)))
+ if missing.area>max(source.area*1e-6,gap_width**2*10):raise RuntimeError('Source alignment would replace too much missing geometry')
+ tree=STRtree(fixed)
+ for part in polygons(missing):
+  candidates=list(tree.query(part,predicate='intersects'))
+  if not candidates:
+   nearest=int(tree.nearest(part))
+   if fixed[nearest].distance(part)>snapping_distance*10:raise RuntimeError('Source border sliver has no adjacent atom')
+   candidates=[nearest]
+  owner=max(candidates,key=lambda i:(part.boundary.intersection(fixed[i].boundary).length,-int(i)))
+  fixed[owner]=polygonal(union_all([fixed[owner],part]))
+ # Node the source-clipping intersections without moving its outlines materially.
+ fixed=coverage_clean(fixed+[background],gap_width=0,snapping_distance=1e-12)[:-1]
+ if not coverage_is_valid(fixed):raise RuntimeError('Repaired block edges do not form a valid coverage')
+ validate_coverage_footprint(fixed,[source])
+ return list(fixed)
+
+def repair_atom_geometry(atoms,source_geoms):
+ geoms=repair_coverage([decode_polygons(a['polygons']) for a in atoms],source_geoms)
+ for atom,geom in zip(atoms,geoms):
+  if geom.is_empty:
+   values=atom['stats'].values() if isinstance(atom['stats'],dict) else atom['stats']
+   if any(values) or any(any(v) for v in atom['votes'].values()):
+    raise RuntimeError('Geometry repair would hide a nonzero atom: '+atom['id'])
+  atom['polygons']=encode_polygons(geom)
+ return geoms,{'revision':GEOMETRY_REVISION,'gapWidthDegrees':2e-7,'snappingDistanceDegrees':1e-9,'emptyAtoms':sum(g.is_empty for g in geoms)}
+
+def paths_ll(geom,fwd):
+ out=[]
+ for poly in polygons(transform(fwd,geom)):
+  for ring in [poly.exterior,*poly.interiors]:out.append('M '+' '.join(f'{x:.7f},{y:.7f}' for x,y in ring.coords)+' Z')
+ return ' '.join(out)
 
 def partition(geom,tree,geoms,ids):
  remaining=geom
@@ -279,6 +350,7 @@ def build_county(county,slug,name,pop,races,city_records,city_geoms):
     votes=[int(side[n]) for side in sides]
     if any(votes):atoms[i]['votes'][key]=[n+old for n,old in zip(votes,atoms[i]['votes'].get(key,[0,0,0]))]
  # Retain empty/shadowed legacy IDs for migration; they have no paintable footprint.
+ atom_ll,coverage=repair_atom_geometry(atoms,blocks)
  for geo in GEO:
   for key in parents[geo]:parent_groups[geo].setdefault(key,[])
  summaries={};city_parents={g:defaultdict(set) for g in GEO}
@@ -287,8 +359,8 @@ def build_county(county,slug,name,pop,races,city_records,city_geoms):
   for key,indices in parent_groups[geo].items():
    rec=parents[geo].get(key,{'precinct':'Unmapped census blocks','county':name})
    # Reconstruct the exact partition footprint, so parent and child exports agree.
-   footprint=union_all([atom_geoms[i] for i in indices]);rec['d']=paths(footprint,proj[geo])
-   xys=transform(proj[geo],transform(TO_LL,footprint)).bounds;rec['bbox']=list(xys) if indices else rec['bbox'];rec['empty']=not bool(indices)
+   footprint=union_all([atom_ll[i] for i in indices]);rec['d']=paths_ll(footprint,proj[geo])
+   xys=transform(proj[geo],footprint).bounds;rec['bbox']=list(xys) if not footprint.is_empty else rec['bbox'];rec['empty']=footprint.is_empty
    for field in statkeys:rec[field]=sum(atoms[i]['stats'].get(field,0) for i in indices)
    rec['inc_med']=rec['inc_medw']/rec['inc_medhh'] if rec['inc_medhh'] else 0
    rec['atomCount']=len(indices);rec['atomFile']=f'data/block-v1/atoms/{slug}.json.gz'
@@ -305,7 +377,7 @@ def build_county(county,slug,name,pop,races,city_records,city_geoms):
  for a in atoms:
   a['stats']=[a['stats'].get(k,0) for k in statkeys];a.pop('houses',None)
  write_json(OUT/'atoms'/f'{slug}.json.gz',{'statKeys':statkeys,'atoms':atoms,'parents':{g:dict(groups) for g,groups in parent_groups.items()}},True)
- report={'buildRevision':3,'elections':election_audit,'precisionMetres':.001,'maxBlockAreaErrorSquareMetres':max_area_error,'county':county,'slug':slug,'blocks':len(blockids),'atoms':len(atoms),'population':sum(rec['pop20'] for rec in summaries['CA']),'adjustedPopulation':sum(rec['pop20Adjusted'] for rec in summaries['CA']),'cityParents':{g:{k:sorted(v) for k,v in cities.items()} for g,cities in city_parents.items()}}
+ report={'buildRevision':3,'geometryRevision':GEOMETRY_REVISION,'coverage':coverage,'elections':election_audit,'precisionMetres':.001,'maxBlockAreaErrorSquareMetres':max_area_error,'county':county,'slug':slug,'blocks':len(blockids),'atoms':len(atoms),'population':sum(rec['pop20'] for rec in summaries['CA']),'adjustedPopulation':sum(rec['pop20Adjusted'] for rec in summaries['CA']),'cityParents':{g:{k:sorted(v) for k,v in cities.items()} for g,cities in city_parents.items()}}
  assert report['population']==int(pop.loc[blockids,'pop20'].sum())
  for g in GEO:
   assert sum(r['pop20'] for r in summaries[g])==report['population']
@@ -357,6 +429,7 @@ if __name__=='__main__':
  slugs=args.counties or list(mapping_county)
  for slug in slugs:
   if args.resume and (OUT/'reports'/f'{slug}.json').exists():
-   if json.loads((OUT/'reports'/f'{slug}.json').read_text()).get('buildRevision')==3:continue
+   report=json.loads((OUT/'reports'/f'{slug}.json').read_text())
+   if report.get('buildRevision')==3 and report.get('geometryRevision')==GEOMETRY_REVISION:continue
   county,name=mapping_county[slug];build_county(county,slug,name,pop,races,cities,city_geoms)
  finalize(slugs,races,cities,city_geoms)

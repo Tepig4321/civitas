@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Audit parent aggregates and original block counts, without changing any data."""
 from pathlib import Path
-import argparse,gzip,json
+import argparse,gzip,json,importlib.util
 import numpy as np
+from shapely import coverage_is_valid
+from shapely.geometry import Polygon,MultiPolygon
 
 ROOT=Path(__file__).resolve().parents[1]
+spec=importlib.util.spec_from_file_location('builder',ROOT/'scripts/build-block-data.py')
+builder=importlib.util.module_from_spec(spec);spec.loader.exec_module(builder)
 def read(path):return json.loads(path.read_text())
 
 def validate(out,completed=False,fixture=False):
@@ -24,7 +28,7 @@ def validate(out,completed=False,fixture=False):
  reports=sorted((out/'reports').glob('*.json'));checked=[];seen_blocks=set();total_population=0;total_atoms=0
  for path in reports:
   report=read(path)
-  if report.get('buildRevision')!=3:
+  if report.get('buildRevision')!=3 or report.get('geometryRevision')!=2:
    assert completed,'Outdated county build: '+path.name
    continue
   slug=report['slug'];assert path.stem==slug
@@ -33,6 +37,21 @@ def validate(out,completed=False,fixture=False):
   assert len({a['id'] for a in atoms})==len(atoms),'Duplicate atom IDs'
   assert np.isfinite(matrix).all(),'Nonfinite statistics'
   assert len(atoms)==report['atoms']
+  geometries=[MultiPolygon([Polygon(poly[0],poly[1:]) for poly in a['polygons']]) for a in atoms]
+  assert all(g.is_valid for g in geometries),'Invalid serialized atom geometry'
+  assert coverage_is_valid(geometries),'Atom edges must match without overlaps'
+  if fixture:source_geometries=[builder.decode_polygons(truth['sourceGeometry'])]
+  else:
+   import pyogrio.raw
+   from shapely import from_wkb
+   _,_,wkb,_=pyogrio.raw.read(ROOT/'.cache/geodata/blocks/tl_2020_06_tabblock20.shp',where=f"COUNTYFP20 = '{report['county']}'",columns=['COUNTYFP20'])
+   source_geometries=from_wkb(wkb)
+  try:builder.validate_coverage_footprint(geometries,source_geometries)
+  except RuntimeError as error:raise AssertionError(str(error)) from error
+  assert report['coverage']['revision']==2,'Missing coverage repair audit'
+  assert sum(g.is_empty for g in geometries)==report['coverage']['emptyAtoms'],'Wrong empty geometry count'
+  for atom,geom in zip(atoms,geometries):
+   if geom.is_empty:assert not any(atom['stats']) and not any(any(v) for v in atom['votes'].values()),'Empty atom has nonzero statistics'
   for atom in atoms:
    for race,values in atom['votes'].items():
     assert len(values)==3 and all(type(value) is int and value>=0 for value in values),('Invalid integer votes',slug,atom['id'],race)

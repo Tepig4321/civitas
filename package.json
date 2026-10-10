@@ -22,6 +22,7 @@
     "test:security": "node scripts/security-audit.cjs",
     "data:fetch": "node scripts/python.cjs scripts/fetch-geodata.py",
     "data:build": "node scripts/python.cjs scripts/build-block-data.py --resume",
+    "data:repair:geometry": "node scripts/python.cjs scripts/repair-block-geometry.py --resume",
     "data:validate": "node scripts/data.cjs validate",
     "dist:win": "electron-builder --win --x64 --publish never",
     "setup": "node scripts/setup.cjs",

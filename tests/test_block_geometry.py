@@ -1,7 +1,7 @@
 import importlib.util,unittest
 from pathlib import Path
 from shapely.geometry import box,Polygon
-from shapely import STRtree,union_all
+from shapely import STRtree,union_all,coverage_is_valid
 spec=importlib.util.spec_from_file_location('builder',Path(__file__).parents[1]/'scripts/build-block-data.py')
 b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)
 class GeometryTests(unittest.TestCase):
@@ -21,4 +21,39 @@ class GeometryTests(unittest.TestCase):
  def test_zero_population_and_stable_remainders(self):
   self.assertEqual(b.allocate(0,[0,0]).tolist(),[0,0])
   self.assertEqual(b.allocate(5,[1,1,1]).tolist(),[2,2,1])
+ def test_shared_edge_repair_preserves_real_narrow_holes_and_enclaves(self):
+  # The real source hole is narrower than the gap-repair tolerance. Background
+  # protection must preserve it while closing a synthetic crack elsewhere.
+  source=Polygon([(0,0),(10,0),(10,10),(0,10)],holes=[[(2,2),(2.0001,2),(2.0001,8),(2,8)]])
+  left=source.intersection(box(0,0,5,10));right=source.intersection(box(5.0001,0,10,10))
+  repaired=b.repair_coverage([left,right],[source],gap_width=.002,snapping_distance=1e-7)
+  self.assertTrue(coverage_is_valid(repaired))
+  self.assertAlmostEqual(union_all(repaired).symmetric_difference(source).area,0,places=8)
+  self.assertAlmostEqual(repaired[0].intersection(repaired[1]).area,0)
+  self.assertEqual(sum(len(p.interiors) for p in b.polygons(union_all(repaired))),1)
+ def test_geometry_repair_preserves_ids_membership_counts_and_votes(self):
+  import copy
+  source=box(0,0,10,10)
+  atoms=[{'id':'left','block':'b','parents':{'CA':'p'},'city':None,'polygons':b.encode_polygons(box(0,0,5,10)),'stats':[3,4],'votes':{'race':[1,2,0]}},
+         {'id':'right','block':'b','parents':{'CA':'p'},'city':None,'polygons':b.encode_polygons(box(5+1e-8,0,10,10)),'stats':[5,6],'votes':{'race':[2,1,0]}}]
+  original=copy.deepcopy(atoms)
+  geoms,_=b.repair_atom_geometry(atoms,[source])
+  for before,after in zip(original,atoms):
+   self.assertEqual({k:v for k,v in before.items() if k!='polygons'},{k:v for k,v in after.items() if k!='polygons'})
+  self.assertAlmostEqual(union_all(geoms).area,100)
+ def test_alpine_serialized_fixture_has_matching_edges_and_no_county_voids(self):
+  import gzip,json
+  root=Path(__file__).parent/'fixtures/block-v1'
+  doc=json.loads(gzip.decompress((root/'atoms/alpine.json.gz').read_bytes()))
+  geoms=[b.decode_polygons(a['polygons']) for a in doc['atoms']]
+  self.assertTrue(coverage_is_valid(geoms))
+  self.assertEqual(sum(len(p.interiors) for p in b.polygons(union_all(geoms))),0)
+ def test_geometry_repair_refuses_to_hide_populated_fragments(self):
+  atom={'id':'populated','polygons':b.encode_polygons(box(0,0,1e-12,1e-12)),'stats':[1],'votes':{}}
+  bulk={'id':'bulk','polygons':b.encode_polygons(box(0,0,1,1)),'stats':[0],'votes':{}}
+  with self.assertRaisesRegex(RuntimeError,'nonzero atom'):b.repair_atom_geometry([atom,bulk],[box(0,0,1,1)])
+ def test_source_alignment_restores_projection_border_slivers(self):
+  source=box(0,0,10,10)
+  repaired=b.repair_coverage([box(5e-7,0,10+5e-7,10)],[source])
+  self.assertAlmostEqual(union_all(repaired).symmetric_difference(source).area,0,places=10)
 if __name__=='__main__':unittest.main()
