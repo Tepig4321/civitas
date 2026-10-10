@@ -127,20 +127,31 @@ def repair_coverage(geoms,source_geoms,gap_width=2e-7,snapping_distance=1e-9):
   owner=max(candidates,key=lambda i:(part.boundary.intersection(fixed[i].boundary).length,-int(i)))
   fixed[owner]=polygonal(union_all([fixed[owner],part]))
  # Node the source-clipping intersections without moving its outlines materially.
- fixed=coverage_clean(fixed+[background],gap_width=0,snapping_distance=1e-9)[:-1]
+ fixed=coverage_clean(fixed+[background],gap_width=0,snapping_distance=snapping_distance)[:-1]
  if not coverage_is_valid(fixed):raise RuntimeError('Repaired block edges do not form a valid coverage')
  validate_coverage_footprint(fixed,[source])
  return list(fixed)
 
 def repair_atom_geometry(atoms,source_geoms):
- geoms=repair_coverage([decode_polygons(a['polygons']) for a in atoms],source_geoms)
+ original=[decode_polygons(a['polygons']) for a in atoms]
+ # Nearly coincident junctions can make GEOS absorb a real strip at one node
+ # tolerance. Retry from the untouched inputs with finer noding, accepting a
+ # result only after the same coverage, source-footprint and nonzero-ID guards.
+ for snapping_distance in [1e-9,1e-10,1e-11,1e-12]:
+  try:
+   geoms=repair_coverage(original,source_geoms,snapping_distance=snapping_distance)
+   for atom,geom in zip(atoms,geoms):
+    if geom.is_empty:
+     values=atom['stats'].values() if isinstance(atom['stats'],dict) else atom['stats']
+     if any(values) or any(any(v) for v in atom['votes'].values()):
+      raise RuntimeError('Geometry repair would hide a nonzero atom: '+atom['id'])
+   break
+  except RuntimeError as error:
+   if snapping_distance==1e-12:raise
+   print('Retrying geometry with finer noding:',str(error),flush=True)
  for atom,geom in zip(atoms,geoms):
-  if geom.is_empty:
-   values=atom['stats'].values() if isinstance(atom['stats'],dict) else atom['stats']
-   if any(values) or any(any(v) for v in atom['votes'].values()):
-    raise RuntimeError('Geometry repair would hide a nonzero atom: '+atom['id'])
   atom['polygons']=encode_polygons(geom)
- return geoms,{'revision':GEOMETRY_REVISION,'gapWidthDegrees':2e-7,'snappingDistanceDegrees':1e-9,'emptyAtoms':sum(g.is_empty for g in geoms)}
+ return geoms,{'revision':GEOMETRY_REVISION,'gapWidthDegrees':2e-7,'snappingDistanceDegrees':snapping_distance,'emptyAtoms':sum(g.is_empty for g in geoms)}
 
 def paths_ll(geom,fwd):
  out=[]

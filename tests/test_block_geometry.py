@@ -56,4 +56,22 @@ class GeometryTests(unittest.TestCase):
   source=box(0,0,10,10)
   repaired=b.repair_coverage([box(5e-7,0,10+5e-7,10)],[source])
   self.assertAlmostEqual(union_all(repaired).symmetric_difference(source).area,0,places=10)
+ def test_finer_noding_preserves_a_real_kern_strip(self):
+  # Three actual serialized neighbors: 1e-9 noding absorbs the third polygon
+  # despite its substantial area and lack of overlap. Keep its saved-map ID.
+  rings=[
+   [(-119.0917072,35.4197149),(-119.09223,35.419719),(-119.09223,35.4197352),(-119.0879096,35.4197015),(-119.089197,35.419704),(-119.090779,35.4197077)],
+   [(-119.09223,35.4197352),(-119.09223,35.4197353),(-119.083386,35.4197173),(-119.083386,35.419701),(-119.0855795,35.4197182),(-119.0862504,35.4196975),(-119.0862505,35.4196975),(-119.0862506,35.4196975),(-119.086884,35.419699),(-119.087124,35.4197),(-119.0879096,35.4197015),(-119.0879097,35.4197015)],
+   [(-119.0864829,35.4196904),(-119.0869032,35.4196774),(-119.089197,35.4196953),(-119.089197,35.419704),(-119.0879096,35.4197015)]]
+  original=[Polygon(ring) for ring in rings]
+  atoms=[{'id':str(i),'polygons':b.encode_polygons(g),'stats':[i+1],'votes':{'race':[0,1,0]}} for i,g in enumerate(original)]
+  geoms,audit=b.repair_atom_geometry(atoms,[union_all(original)])
+  self.assertEqual(audit['snappingDistanceDegrees'],1e-10)
+  self.assertTrue(coverage_is_valid(geoms))
+  for i,geom in enumerate(geoms):
+   self.assertFalse(geom.is_empty)
+   self.assertEqual(atoms[i]['id'],str(i))
+   self.assertEqual(atoms[i]['stats'],[i+1])
+   self.assertEqual(atoms[i]['votes'],{'race':[0,1,0]})
+   self.assertLess(geom.symmetric_difference(original[i]).area,2e-12)
 if __name__=='__main__':unittest.main()
