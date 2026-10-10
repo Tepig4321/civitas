@@ -25,3 +25,11 @@ test('spatial index includes large shapes and filters empty bounding boxes',()=>
  const a={bbox:[0,0,1,1]},b={bbox:[-10000,-10000,10000,10000]};
  const index=new SpatialIndex([a,b],1);assert.deepEqual(index.at(.5,.5),[a,b]);assert.deepEqual(index.at(2,2),[b]);
 });
+
+ test('display omits subpixel fragments without modifying exact geometry',()=>{
+  const {displayRing}=require('../web/lib/editor-core.js');
+  const tiny=[[1,1],[1.001,1],[1.001,1.001],[1,1.001],[1,1]],before=JSON.stringify(tiny);
+  assert.equal(displayRing(tiny,2),false);assert.equal(JSON.stringify(tiny),before);
+  const small=[[0,0],[.5,0],[.5,.5],[0,.5],[0,0]];
+  assert.equal(displayRing(small,2),false);assert.equal(displayRing(small,0),true);
+ });

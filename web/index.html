@@ -1215,7 +1215,7 @@ html, body {
       </div>
       <div class="district-ideal" id="home-ideal" hidden></div>
     </div>
-    <button class="home-primary-btn" id="home-create-btn" type="button">Create Map</button>
+    <button class="home-primary-btn" id="home-create-btn" type="button" disabled>Create Map</button>
     <button class="home-primary-btn" id="home-import-btn" type="button" hidden>Open map file&hellip;</button>
     <input type="file" id="home-import-file" accept=".civitasmap,.json" hidden>
   </div>
@@ -2202,8 +2202,8 @@ html, body {
   var view = { x: 0, y: 0, w: 1, h: 1 };
   var minScale = 0.55, maxScale = 100, defaultScale = 0.85;
   var borderBase = 0.15;
-  var SEAM_PLUG_WIDTH = 1.5;
-  var DISTRICT_PLUG_WIDTH = 2;
+  var SEAM_PLUG_WIDTH = 0.35;
+  var DISTRICT_PLUG_WIDTH = 0.35;
   var districtBorderBase = 1;
   var countyBorderBase = 0.5;
   var borderColor = '#000000';
@@ -2240,9 +2240,10 @@ html, body {
       if (dx * dx + dy * dy >= e2) { out.push(ring[i]); lx = ring[i][0]; ly = ring[i][1]; }
     }
     out.push(ring[n - 1]);
-    return out.length >= 4 ? out : ring;
+    return out.length >= 4 ? out : [];
   }
   function addRingToPath(path, ring) {
+    if (ring.length < 4) return;
     path.moveTo(ring[0][0], ring[0][1]);
     for (var p = 1; p < ring.length; p++) path.lineTo(ring[p][0], ring[p][1]);
     path.closePath();
@@ -2257,6 +2258,18 @@ html, body {
   }
   var districtLabelPoints = {};
   var shapes = [];
+  // Subpixel fragments remain in data and exact hit/export geometry. Avoid inflating them into visible dots.
+  function displayPath(s, lod) {
+    s.displayPaths ||= [null,null,null];
+    if (s.displayPaths[lod]) return s.displayPaths[lod];
+    var path = new Path2D();
+    for (var r=0;r<s.rings.length;r++) {
+      var ring=s.rings[r];
+      if (!CivitasEditor.displayRing(ring,lod)) continue;
+      addRingToPath(path,lod?decimateRing(ring,LOD_EPS[lod]):ring);
+    }
+    return s.displayPaths[lod]=path;
+  }
   var strokeShapes = [];
 
   function parseRings(d) {
@@ -2397,7 +2410,7 @@ html, body {
       var area = ringArea(ring);
       if (area < MIN_RING_AREA) return;
       var lods = [ring, decimateRing(ring, LOD_EPS[1]), decimateRing(ring, LOD_EPS[2])];
-      for (var l = 0; l < 3; l++) addRingToPath(paths[l], lods[l]);
+      for (var l = 0; l < 3; l++) if(CivitasEditor.displayRing(ring,l)) addRingToPath(paths[l], lods[l]);
       rings.push({outer:ringIdx===0,lods:lods});
       if (ringIdx===0 && area>bestArea) { bestArea=area;label=ringCentroid(ring); }
     }); });
@@ -2405,12 +2418,15 @@ html, body {
   }
 
   function buildDistrictGeom(k, list) {
+    var cached=districtGeomCache[k];
+    if(cached&&cached.members?.length===list.length&&list.every(function(s,i){return cached.members[i]===s&&cached.sourceRings[i]===s.rings;}))return cached;
     var polygons = list.map(function(sh) { sh.drawSelf=false;return shapeMultiPolygon(sh); });
     var provisional = geometryFromPolygons(polygons.flat());
+    provisional.members=list.slice();provisional.sourceRings=list.map(function(s){return s.rings;});
     if (!editor || polygons.length < 2) return provisional;
     provisional.pending = editor.unionGeometry(polygons).then(function(result) {
       if (districtGeomCache[k] !== provisional) return;
-      districtGeomCache[k] = geometryFromPolygons(result);
+      districtGeomCache[k] = Object.assign(geometryFromPolygons(result),{members:provisional.members,sourceRings:provisional.sourceRings});
       anyBordersDirty = true;
       computeDistrictBorders(); draw();
     }).catch(function(error) { provisional.failed=true;editor.notice('District outline could not merge: '+error.message,true); });
@@ -2432,7 +2448,7 @@ html, body {
     dirtyDistricts = {};
     anyBordersDirty = false;
     allBordersDirty = false;
-    if (rebuildAll) districtGeomCache = {};
+    // Membership checks below reuse outlines when only labels, locks or analysis changed.
 
     unassignedPoints = [];
     var byDistrict = {};
@@ -3110,7 +3126,7 @@ html, body {
         if (fs.fill !== NODATA_FAINT_FILL) continue;
         if (fb[2] < vx0 || fb[0] > vx1 || fb[3] < vy0 || fb[1] > vy1) continue;
         if (fs.districtId !== null && fillPaths[fs.districtId] && !fs.drawSelf && !isDimmed(fs) && !showsUnit(fs)) continue;
-        var fp = shapePath(fs, lod);
+        var fp = displayPath(fs, lod);
         fctx.fillStyle = fs.fill;
         fctx.fill(fp);
         fctx.strokeStyle = fs.fill;
@@ -3129,7 +3145,7 @@ html, body {
       if (sb[2] < vx0 || sb[0] > vx1 || sb[3] < vy0 || sb[1] > vy1) continue;
       if (faintOn && s.fill === NODATA_FAINT_FILL) continue;
       if (s.districtId !== null && fillPaths[s.districtId] && !s.drawSelf && !isDimmed(s) && !showsUnit(s)) continue;
-      var sp = shapePath(s, lod);
+      var sp = displayPath(s, lod);
       ctx.fillStyle = s.fill;
       ctx.fill(sp);
       ctx.strokeStyle = s.fill;
@@ -3150,7 +3166,7 @@ html, body {
 
     for (var q = 0; q < strokeShapes.length; q++) {
       ctx.fillStyle = strokeShapes[q].fill;
-      ctx.fill(shapePath(strokeShapes[q], lod));
+      ctx.fill(displayPath(strokeShapes[q], lod));
     }
     if (layered) {
       ctx = mainCtx;
@@ -3169,7 +3185,7 @@ html, body {
         if (bs.districtId !== null && !isDimmed(bs) && !showsUnit(bs)) continue;
         if (faintOn && bs.fill === NODATA_FAINT_FILL) continue;
         if (bb[2] < vx0 || bb[0] > vx1 || bb[3] < vy0 || bb[1] > vy1) continue;
-        ctx.stroke(shapePath(bs, lod));
+        ctx.stroke(displayPath(bs, lod));
       }
     }
 
@@ -5797,7 +5813,7 @@ html, body {
     meta: function() { return { count: districtCount, mode: districtColorMode, name: mapNameInput.value, basis: populationBasis, names: districtNames, locked: districtLocked }; },
     setBasis: function(basis) { populationBasis = basis === 'adjusted' ? 'adjusted' : 'census'; document.getElementById('population-basis').value = populationBasis; },
     setMeta: function(m) { districtCount = Math.max(0, Math.min(1000,m.count|0)); districtCountInput.value = districtCount; districtColorMode = m.mode === 'by-lean' ? 'by-lean' : 'by-district'; districtNames = m.names; districtLocked = m.locked; mapNameInput.value = m.name; populationBasis = m.basis === 'adjusted' ? 'adjusted' : 'census'; document.getElementById('population-basis').value = populationBasis; districtModeByDistrictBtn.classList.toggle('active',districtColorMode === 'by-district'); districtModeByLeanBtn.classList.toggle('active',districtColorMode === 'by-lean'); if (activeDistrictId > districtCount) activeDistrictId = null; },
-    shapes: function(next) { shapes = next; adjCache = null; mapTotalsCache = null; countyAggCache = {}; markAllBordersDirty(); },
+    shapes: function(next) { shapes = next; adjCache = null; countyAggCache = {}; markAllBordersDirty(); },
     changed: function() { hasUnsavedChanges = true; },
     persist: saveDraft,
     refresh: recomputeDistricts,
@@ -5805,8 +5821,9 @@ html, body {
     redraw: draw,
     zoom: function(b) { var cx=(b[0]+b[2])/2,cy=(b[1]+b[3])/2,w=Math.max(b[2]-b[0],2)*1.15,h=Math.max(b[3]-b[1],2)*1.15; var aspect=canvas.clientWidth/canvas.clientHeight; if(w/h>aspect)h=w/aspect;else w=h*aspect;view={x:cx-w/2,y:cy-h/2,w:w,h:h};draw(); }
   });
-  window.CivitasApp = { ready: async function() { await loadGeometry(); await editor.ready; }, editor: editor, save: saveCurrentMap, storage: mapStorage, restore: applySavedPayload, worldToScreen: function(x,y) { var r=canvas.getBoundingClientRect(),scale=baseScale*(base.w/view.w);return [r.left+offX+(x-view.x)*scale,r.top+offY+(y-view.y)*scale]; }, getShapes: function() { return shapes; }, getStats: function() { return { districts: districtStats, totals: mapTotals, basis: populationBasis }; } };
+  window.CivitasApp = { render: draw, ready: async function() { await loadGeometry(); await editor.ready; }, editor: editor, save: saveCurrentMap, storage: mapStorage, restore: applySavedPayload, worldToScreen: function(x,y) { var r=canvas.getBoundingClientRect(),scale=baseScale*(base.w/view.w);return [r.left+offX+(x-view.x)*scale,r.top+offY+(y-view.y)*scale]; }, getShapes: function() { return shapes; }, getStats: function() { return { districts: districtStats, totals: mapTotals, basis: populationBasis }; } };
 
+  document.getElementById('home-create-btn').disabled=false;
   renderHomeSavedList();
   restoreFromHash();
 })();

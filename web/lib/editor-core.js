@@ -83,6 +83,14 @@
     out.margin=two ? ((out.dem||0)-(out.rep||0))/two : null;
     return out;
   }
+  function displayRing(ring,lod) {
+    if(ring._displaySize===undefined) {
+      let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
+      for(const p of ring){x0=Math.min(x0,p[0]);y0=Math.min(y0,p[1]);x1=Math.max(x1,p[0]);y1=Math.max(y1,p[1]);}
+      ring._displaySize=Math.max(x1-x0,y1-y0);
+    }
+    return ring._displaySize>=[0.005,0.2,0.8][lod];
+  }
   class SpatialIndex {
     constructor(records,cell=30) {
       this.cell=cell;this.buckets=new Map();this.large=[];
@@ -98,5 +106,5 @@
     }
     at(x,y) {return [...(this.buckets.get(Math.floor(x/this.cell)+','+Math.floor(y/this.cell))||[]),...this.large].filter(r => x>=r.bbox[0]&&x<=r.bbox[2]&&y>=r.bbox[1]&&y<=r.bbox[3]);}
   }
-  return {History,difference,allocate,aggregate,SpatialIndex,copy};
+  return {History,difference,allocate,aggregate,SpatialIndex,displayRing,copy};
 });

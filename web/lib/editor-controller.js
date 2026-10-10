@@ -65,6 +65,7 @@
         for(const [id,records] of Object.entries(data.parents)) {
           const parent=index[id];
           if(parent._children)continue;
+          parent._version=(parent._version||0)+1;
           parent._children=records.map(rec=>{
             const g=geometry(rec.polygons),values={};
             data.statKeys.forEach((key,i)=>{values[key]=rec.stats[i];});
@@ -93,7 +94,7 @@
           merging.delete(signature);if(token!==generation)return;
           merged.set(signature,data.groups.shape);if(merged.size>512)merged.delete(merged.keys().next().value);
           // Ring replacement is presentation only; never add it to history or change totals.
-          for(const current of visibleRecords)if(current._signature===signature){current._polygons=data.groups.shape;current.rings=data.groups.shape.flat();current.paths=[null,null,null];}
+          for(const current of visibleRecords)if(current._signature===signature){current._polygons=data.groups.shape;current.rings=data.groups.shape.flat();current.paths=[null,null,null];current.displayPaths=null;}
           if(bridge.geometryChanged)bridge.geometryChanged();else bridge.redraw();
         }).catch(error=>{merging.delete(signature);notice(error.message,true);});
       }
@@ -103,7 +104,9 @@
       const visible=[];
       for(const p of parents) {
         if(!p._children||!p._children.length){visible.push(p);continue;}
-        const groups=new Map();
+        const race=bridge.race()?.key,shift=bridge.shift(),cache=p._viewCache;
+        if(cache&&cache.version===(p._version||0)&&cache.open===(opened===p)&&cache.race===race&&cache.from===shift.from&&cache.to===shift.to){visible.push(...cache.shapes);continue;}
+        const start=visible.length,groups=new Map();
         for(const a of p._children) {
           syncValues(a);
           const key=opened===p?a.blockId+'|'+a.districtId:String(a.districtId);
@@ -112,8 +115,10 @@
         if(opened!==p&&groups.size===1) {
           p.districtId=p._children[0].districtId;visible.push(p);
         }else for(const [key,atoms] of groups)visible.push(groupShape(p,atoms,String(atoms[0].districtId),opened===p?atoms[0].blockId:null));
+        p._viewCache={version:p._version||0,open:opened===p,race,from:shift.from,to:shift.to,shapes:visible.slice(start)};
       }
-      visibleRecords=visible;shapeIndex=new SpatialIndex(visible);bridge.shapes(visible);viewToken++;updates();
+      const geometryChanged=visible.length!==visibleRecords.length||visible.some((s,i)=>s!==visibleRecords[i]);
+      visibleRecords=visible;if(geometryChanged||!shapeIndex)shapeIndex=new SpatialIndex(visible);bridge.shapes(visible);viewToken++;updates();
     }
     function closeBlocks() {if(!opened)return;opened=null;sync();bridge.refresh();}
     async function openBlocks(p) {
@@ -126,7 +131,7 @@
     }
     function assignAtoms(atoms,district,locks) {
       const changed=[];
-      for(const a of atoms){if(a.districtId!==null&&locks[a.districtId])continue;if(a.districtId===district)continue;a.districtId=district;changed.push(a);}
+      for(const a of atoms){if(a.districtId!==null&&locks[a.districtId])continue;if(a.districtId===district)continue;a.districtId=district;a._parent._version=(a._parent._version||0)+1;changed.push(a);}
       return changed;
     }
     async function paintCity(city,tool,district,locks) {
@@ -184,7 +189,7 @@
       await validateSnapshot(state);
       for(const p of parents) {
         const saved=state.assignments[p._id]||{district:null,overrides:{}};
-        p.districtId=saved.district??null;
+        p._version=(p._version||0)+1;p.districtId=saved.district??null;
         if(p._children)for(const a of p._children)a.districtId=Object.hasOwn(saved.overrides||{},a.id)?saved.overrides[a.id]:p.districtId;
       }
       bridge.setMeta({...state.meta,names:copy(state.names),locked:copy(state.locked)});sync();bridge.refresh();
@@ -215,7 +220,7 @@
       initialize(records){generation++;parents=records.slice();index=Object.fromEntries(parents.map(p=>[p._id,p]));statKeys=bridge.statKeys();opened=null;cities=[];cityIndex=null;hoverCity=null;merged.clear();merging.clear();before=null;history=new History();sync();
         if(!parents.length){citiesReady=Promise.resolve();return;}
         const token=generation;citiesReady=bridge.fetchCities().then(doc=>{if(token!==generation)return;cities=doc.records.map(c=>({...c,rings:bridge.parse(c.d),paths:[null,null,null]}));cityIndex=new SpatialIndex(cities);bridge.redraw();});citiesReady.catch(error=>notice('City boundaries could not load: '+error.message,true));},
-      resetMap(){opened=null;before=null;history=new History();for(const p of parents){p.districtId=null;if(p._children)for(const a of p._children)a.districtId=null;}bridge.setBasis('census');sync();},
+      resetMap(){opened=null;before=null;history=new History();for(const p of parents){p._version=(p._version||0)+1;p.districtId=null;if(p._children)for(const a of p._children)a.districtId=null;}bridge.setBasis('census');sync();},
       apply,sync,begin,finish,closeBlocks,snapshot,restore,notice,undoRedo,openBlocks,paintCity,
       validatePayload:(payload,name)=>validateSnapshot(payloadState(payload,name)),
       unionGeometry:async polygons=>(await request({operation:'union',groups:{shape:polygons}})).groups.shape,
@@ -224,7 +229,7 @@
       overlay(ctx,scale){if(bridge.paintBy()==='city'||document.getElementById('show-city-borders').checked){ctx.strokeStyle='#24cbd1';ctx.lineWidth=1.2/scale;for(const c of cities){if(hoverCity===c&&bridge.paintBy()==='city'){ctx.fillStyle='rgba(36,203,209,.14)';ctx.fill(bridge.path(c));ctx.lineWidth=2.5/scale;}ctx.stroke(bridge.path(c));ctx.lineWidth=1.2/scale;}}if(opened){ctx.strokeStyle='#24cbd1';ctx.lineWidth=2.5/scale;ctx.stroke(bridge.path(opened));}},
       endStroke(){sync();finish();bridge.refresh();},
       metadataChanged(text,fn){if(busy||bridge.readOnly()){updates();return;}begin(text);fn();sync();finish();bridge.refresh();},
-      reduceCount(n){for(const p of parents){if(p.districtId>n)p.districtId=null;if(p._children)for(const a of p._children)if(a.districtId>n)a.districtId=null;}},
+      reduceCount(n){for(const p of parents){p._version=(p._version||0)+1;if(p.districtId>n)p.districtId=null;if(p._children)for(const a of p._children)if(a.districtId>n)a.districtId=null;}},
       exportState(){const state=snapshot();return {version:2,dataset:bridge.dataset(),populationBasis:state.meta.basis,unitAssignments:state.assignments,history:history.persistent()};},
       districtVotes(records,race){const result={};for(const r of records){const p=index[r.county+'|'+r.precinct];if(!p)continue;
         const pieces=p._children||[p];for(const a of pieces){if(a.districtId===null)continue;const votes=p._children?(a._votes[race.key]||[0,0,0]):[r.dem,r.rep,r.other];const v=result[a.districtId]||(result[a.districtId]=[0,0,0]);for(let i=0;i<3;i++)v[i]+=votes[i];}}
