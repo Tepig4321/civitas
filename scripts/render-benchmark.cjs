@@ -5,7 +5,7 @@ const {_electron:electron}=require('playwright');
  const source=process.argv[2]||'.',label=process.argv[3]||'current';
  const profile=await fs.mkdtemp(path.join(os.tmpdir(),'civitas-render-'));let app;
  try {
-  const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
+  const env={...process.env,CIVITAS_TEST_HIDE_WINDOW:'1'};delete env.ELECTRON_RUN_AS_NODE;
   app=await electron.launch({args:[source,`--user-data-dir=${profile}`],env});
   await app.context().route('https://**',r=>r.abort());
   const page=await app.firstWindow();page.on('pageerror',e=>console.error('Renderer',e.message));await page.waitForFunction(()=>!!window.CivitasApp);await page.selectOption('#home-geo-select','precinct');await page.locator('#home-create-btn').dispatchEvent('click');await page.waitForFunction(()=>!document.getElementById('app-view').hidden);

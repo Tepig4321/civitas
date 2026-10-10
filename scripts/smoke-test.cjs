@@ -8,7 +8,7 @@ const { _electron: electron } = require('playwright');
 (async () => {
   const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'civitas-smoke-'));
   const executablePath = process.argv[2];
-  const env = { ...process.env };
+  const env = { ...process.env, CIVITAS_TEST_HIDE_WINDOW: '1' };
   delete env.ELECTRON_RUN_AS_NODE;
   let app;
   try {

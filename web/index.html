@@ -2189,7 +2189,7 @@ html, body {
   }
   var base = { x: 0, y: 0, w: 1, h: 1 };
   var view = { x: 0, y: 0, w: 1, h: 1 };
-  var minScale = 0.55, maxScale = 100, defaultScale = 0.85;
+  var minScale = 0.55, maxScale = 100000, defaultScale = 0.85;
   var borderBase = 0.15;
   var SEAM_PLUG_WIDTH = 0.35;
   var DISTRICT_PLUG_WIDTH = 0.35;
@@ -2248,16 +2248,18 @@ html, body {
   var districtLabelPoints = {};
   var shapes = [];
   // Subpixel fragments remain in data and exact hit/export geometry. Avoid inflating them into visible dots.
-  function displayPath(s, lod) {
+  function displayPath(s, lod, scale) {
     s.displayPaths ||= [null,null,null];
-    if (s.displayPaths[lod]) return s.displayPaths[lod];
+    s.displayScales ||= [null,null,null];
+    var bucket=scale>0?Math.pow(2,Math.floor(Math.log2(scale))):null;
+    if (s.displayPaths[lod] && s.displayScales[lod] === bucket) return s.displayPaths[lod];
     var path = new Path2D();
     for (var r=0;r<s.rings.length;r++) {
       var ring=s.rings[r];
-      if (!CivitasEditor.displayRing(ring,lod)) continue;
+      if (!CivitasEditor.displayRing(ring,lod,bucket)) continue;
       addRingToPath(path,lod?decimateRing(ring,LOD_EPS[lod]):ring);
     }
-    return s.displayPaths[lod]=path;
+    s.displayScales[lod]=bucket;return s.displayPaths[lod]=path;
   }
   var strokeShapes = [];
 
@@ -2402,7 +2404,7 @@ html, body {
       rings.push({outer:ringIdx===0,lods:lods});
       if (ringIdx===0 && area>bestArea) { bestArea=area;label=ringCentroid(ring); }
     }); });
-    return {paths:paths,rings:rings,label:label};
+    return {paths:paths,rings:rings,label:label,displayShape:{rings:rings.map(function(r){return r.lods[0];})}};
   }
 
   function buildDistrictGeom(k, list) {
@@ -2502,7 +2504,7 @@ html, body {
     var total = dpr * baseScale * relScale;
     var cssScale = baseScale * relScale;
     hoverCtx.setTransform(total, 0, 0, total, dpr * offX - view.x * total, dpr * offY - view.y * total);
-    var p = shapePath(hoverShape, lodForScale(cssScale));
+    var p = displayPath(hoverShape, lodForScale(cssScale), cssScale);
     hoverCtx.lineJoin = 'round';
     hoverCtx.strokeStyle = '#ffffff';
     hoverCtx.lineWidth = 3.5 / cssScale;
@@ -3114,7 +3116,7 @@ html, body {
         if (fs.fill !== NODATA_FAINT_FILL) continue;
         if (fb[2] < vx0 || fb[0] > vx1 || fb[3] < vy0 || fb[1] > vy1) continue;
         if (fs.districtId !== null && fillPaths[fs.districtId] && !fs.drawSelf && !isDimmed(fs) && !showsUnit(fs)) continue;
-        var fp = displayPath(fs, lod);
+        var fp = displayPath(fs, lod, cssScale);
         fctx.fillStyle = fs.fill;
         fctx.fill(fp);
         fctx.strokeStyle = fs.fill;
@@ -3133,7 +3135,7 @@ html, body {
       if (sb[2] < vx0 || sb[0] > vx1 || sb[3] < vy0 || sb[1] > vy1) continue;
       if (faintOn && s.fill === NODATA_FAINT_FILL) continue;
       if (s.districtId !== null && fillPaths[s.districtId] && !s.drawSelf && !isDimmed(s) && !showsUnit(s)) continue;
-      var sp = displayPath(s, lod);
+      var sp = displayPath(s, lod, cssScale);
       ctx.fillStyle = s.fill;
       ctx.fill(sp);
       ctx.strokeStyle = s.fill;
@@ -3146,15 +3148,16 @@ html, body {
       if (showUnitsInDistrict && activeDistrictId !== null && Number(k) === activeDistrictId) return;
       var stats = districtStats[k] || { margin: null };
       var fillColor = districtColorMode === 'by-lean' ? districtLayerFill(stats) : districtColor(k);
+      var districtPath=displayPath(districtGeomCache[k].displayShape,lod,cssScale);
       ctx.fillStyle = fillColor;
-      ctx.fill(fillPaths[k]);
+      ctx.fill(districtPath);
       ctx.strokeStyle = fillColor;
-      ctx.stroke(fillPaths[k]);
+      ctx.stroke(districtPath);
     });
 
     for (var q = 0; q < strokeShapes.length; q++) {
       ctx.fillStyle = strokeShapes[q].fill;
-      ctx.fill(displayPath(strokeShapes[q], lod));
+      ctx.fill(displayPath(strokeShapes[q], lod, cssScale));
     }
     if (layered) {
       ctx = mainCtx;
@@ -3173,7 +3176,7 @@ html, body {
         if (bs.districtId !== null && !isDimmed(bs) && !showsUnit(bs)) continue;
         if (faintOn && bs.fill === NODATA_FAINT_FILL) continue;
         if (bb[2] < vx0 || bb[0] > vx1 || bb[3] < vy0 || bb[1] > vy1) continue;
-        ctx.stroke(displayPath(bs, lod));
+        ctx.stroke(displayPath(bs, lod, cssScale));
       }
     }
 
@@ -3226,8 +3229,9 @@ html, body {
       return;
     }
     if (scale > maxScale) {
+      var aspect=view.h/view.w;
       view.w = base.w / maxScale;
-      view.h = base.h / maxScale;
+      view.h = view.w * aspect;
     }
     var padX = base.w * 0.6, padY = base.h * 0.6;
     var minX = base.x - padX, maxX = base.x + base.w + padX - view.w;
@@ -3243,7 +3247,7 @@ html, body {
     var newScale = base.w / newW;
     if (newScale > maxScale) {
       newW = base.w / maxScale;
-      newH = base.h / maxScale;
+      newH = newW * (view.h / view.w);
     } else if (newScale < minScale) {
       newW = base.w / minScale;
       newH = base.h / minScale;
@@ -3441,11 +3445,13 @@ html, body {
     isPanning = false;
     canvas.classList.remove('panning');
     if (moved < 4) {
-      var s = pickAt(e.clientX, e.clientY);
+      var s = pickAt(e.clientX, e.clientY, activeTool !== 'cursor' || paintBy === 'block');
       if (s) {
         showDetail(s);
         var canPaintClick = activeTool === 'paint' && activeDistrictId !== null && !districtLocked[activeDistrictId];
-        if (canPaintClick || activeTool === 'eraser') {
+        if (editor && paintBy === 'block' && editor.opened !== (s._parent || s)) {
+          editor.openBlocks(s._parent || s);
+        } else if (canPaintClick || activeTool === 'eraser') {
           var changed = applyToolTo(s, activeTool);
           if (editor) editor.endStroke();
           if (changed.length) {
@@ -5804,7 +5810,7 @@ html, body {
     projection: function() { return geoProjectionConfig; },
     project: function(lon, lat) { return geoProj.fwd(lon, lat); },
     parse: parseRings, path: function(s) { return shapePath(s, 0); },
-    displayPath: function(s,scale) { return displayPath(s,lodForScale(scale)); },
+    displayPath: function(s,scale) { return displayPath(s,lodForScale(scale),scale); },
     viewport: function() { return [view.x,view.y,view.x+view.w,view.y+view.h]; },
     contains: function(s,x,y) { ctx.save(); ctx.setTransform(1,0,0,1,0,0); var hit = ctx.isPointInPath(shapePath(s,0),x,y); ctx.restore(); return hit; },
     fetchCities: function() { return fetchJSON(currentState.dataDir + 'cities.json'); },
@@ -5820,7 +5826,7 @@ html, body {
     redraw: draw,
     zoom: function(b) { var cx=(b[0]+b[2])/2,cy=(b[1]+b[3])/2,w=Math.max(b[2]-b[0],2)*1.15,h=Math.max(b[3]-b[1],2)*1.15; var aspect=canvas.clientWidth/canvas.clientHeight; if(w/h>aspect)h=w/aspect;else w=h*aspect;view={x:cx-w/2,y:cy-h/2,w:w,h:h};draw(); }
   });
-  window.CivitasApp = { render: draw, ready: async function() { await loadGeometry(); await editor.ready; }, editor: editor, save: saveCurrentMap, storage: mapStorage, restore: applySavedPayload, worldToScreen: function(x,y) { var r=canvas.getBoundingClientRect(),scale=baseScale*(base.w/view.w);return [r.left+offX+(x-view.x)*scale,r.top+offY+(y-view.y)*scale]; }, getShapes: function() { return shapes; }, getStats: function() { return { districts: districtStats, totals: mapTotals, basis: populationBasis }; } };
+  window.CivitasApp = { render: draw, getView: function() { return { ...view, zoom:base.w/view.w }; }, ready: async function() { await loadGeometry(); await editor.ready; }, editor: editor, save: saveCurrentMap, storage: mapStorage, restore: applySavedPayload, worldToScreen: function(x,y) { var r=canvas.getBoundingClientRect(),scale=baseScale*(base.w/view.w);return [r.left+offX+(x-view.x)*scale,r.top+offY+(y-view.y)*scale]; }, getShapes: function() { return shapes; }, getStats: function() { return { districts: districtStats, totals: mapTotals, basis: populationBasis }; } };
 
   document.getElementById('home-create-btn').disabled=false;
   renderHomeSavedList();

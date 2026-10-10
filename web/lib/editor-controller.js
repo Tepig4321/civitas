@@ -220,7 +220,7 @@
       if(!payload.dataset)notice('Map upgraded: district totals now use 2020 Census blocks. An original recovery copy is retained.');
     }
     const api={
-      initialize(records){generation++;parents=records.slice();index=Object.fromEntries(parents.map(p=>[p._id,p]));statKeys=bridge.statKeys();opened=null;cities=[];cityIndex=null;hoverCity=null;merged.clear();merging.clear();before=null;history=new History();sync();
+      initialize(records){generation++;parents=records.slice();index=Object.fromEntries(parents.map(p=>[p._id,p]));statKeys=bridge.statKeys();opened=null;cities=[];cityIndex=null;shapeIndex=null;visibleRecords=[];hoverCity=null;merged.clear();merging.clear();before=null;history=new History();sync();
         if(!parents.length){citiesReady=Promise.resolve();return;}
         const token=generation;citiesReady=bridge.fetchCities().then(doc=>{if(token!==generation)return;cities=doc.records.map(c=>({...c,rings:bridge.parse(c.d),paths:[null,null,null]}));cityIndex=new SpatialIndex(cities);bridge.redraw();});citiesReady.catch(error=>notice('City boundaries could not load: '+error.message,true));},
       resetMap(){opened=null;before=null;history=new History();for(const p of parents){p._version=(p._version||0)+1;p.districtId=null;if(p._children)for(const a of p._children)a.districtId=null;}bridge.setBasis('census');sync();},

@@ -8,7 +8,7 @@ const {_electron:electron}=require('playwright');
  const profile=await fs.mkdtemp(path.join(os.tmpdir(),'civitas-editor-'));
  let app;const errors=[];
  try {
-  const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
+  const env={...process.env,CIVITAS_TEST_HIDE_WINDOW:'1'};delete env.ELECTRON_RUN_AS_NODE;
   app=await electron.launch({args:['.',`--user-data-dir=${profile}`],env,timeout:60000});
   await app.context().route('https://**',route=>route.abort());
   app.context().setDefaultTimeout(120000);

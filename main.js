@@ -62,6 +62,8 @@ function registerProtocol() {
 }
 
 let mainWindow = null;
+// Keep automated checks off the user's desktop, and require their isolated profile.
+const HIDE_TEST_WINDOW = process.env.CIVITAS_TEST_HIDE_WINDOW === '1' && process.argv.some(arg => arg.startsWith('--user-data-dir='));
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -76,9 +78,10 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: !HIDE_TEST_WINDOW,
     },
   });
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  mainWindow.once('ready-to-show', () => { if (!HIDE_TEST_WINDOW) mainWindow.show(); });
   mainWindow.on('closed', () => { mainWindow = null; });
 
   // Links to the web (map credits, etc.) open in the normal browser, never inside the app.

@@ -94,13 +94,14 @@
     out.inc_med=out.inc_medhh ? out.inc_medw/out.inc_medhh : 0;
     return setElectionMargin(out);
   }
-  function displayRing(ring,lod) {
+  function displayRing(ring,lod,scale) {
     if(ring._displaySize===undefined) {
       let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;
       for(const p of ring){x0=Math.min(x0,p[0]);y0=Math.min(y0,p[1]);x1=Math.max(x1,p[0]);y1=Math.max(y1,p[1]);}
       ring._displaySize=Math.max(x1-x0,y1-y0);
     }
-    return ring._displaySize>=[0.005,0.2,0.8][lod];
+    const minimum=Number.isFinite(scale)&&scale>0?0.3/scale:[0.005,0.2,0.8][lod];
+    return ring._displaySize>=minimum;
   }
   class SpatialIndex {
     constructor(records,cell=30) {

@@ -4,7 +4,7 @@ ElectionCord Civitas desktop source, California data and local release artifacts
 
 ## Develop and verify
 
-Use `npm ci` and `npm start`. Run `npm test`, `npm run test:smoke` and `npm run test:editor`. Electron checks use temporary profiles and do not touch saved user maps. See [the editor guide](docs/EDITOR.md) for tools, history, migration and data methods.
+Use `npm ci` and `npm start`. Run `npm test`, `npm run test:smoke`, `npm run test:editor` and `npm run test:pointer`. Electron checks use temporary profiles and do not touch saved user maps. See [the editor guide](docs/EDITOR.md) for tools, history, migration and data methods.
 
 Rebuild the geodata with Python 3.14:
 

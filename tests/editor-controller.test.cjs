@@ -37,6 +37,12 @@ test('opening blocks is view-only; split, live totals, close, undo, redo and rem
   assert.ok(f.visible.includes(p));assert.equal(p.districtId,2);
   assert.equal(e.history.commands.length,3);
 });
+test('initialization rebuilds picking when a loader populated the previously empty view',()=>{
+  const f=fixture(),e=f.editor;e.initialize([]);
+  const loaded=f.visible;loaded.push(...f.parents);
+  e.initialize(loaded);
+  assert.equal(e.pickCandidates(.5,.5).includes(f.parents[0]),true);
+});
 test('city paint and erase include every city piece, preserve exterior and respect locks',async()=>{
   const f=fixture(),e=f.editor;await e.ready;
   for(const p of f.parents)e.apply(p,'paint','unit',1,{});e.endStroke();

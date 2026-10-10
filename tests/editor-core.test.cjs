@@ -37,6 +37,7 @@ test('spatial index includes large shapes and filters empty bounding boxes',()=>
   const {displayRing}=require('../web/lib/editor-core.js');
   const tiny=[[1,1],[1.001,1],[1.001,1.001],[1,1.001],[1,1]],before=JSON.stringify(tiny);
   assert.equal(displayRing(tiny,2),false);assert.equal(JSON.stringify(tiny),before);
+  assert.equal(displayRing(tiny,0,10),false);assert.equal(displayRing(tiny,0,1000),true);
   const small=[[0,0],[.5,0],[.5,.5],[0,.5],[0,0]];
   assert.equal(displayRing(small,2),false);assert.equal(displayRing(small,0),true);
  });
