@@ -37,6 +37,8 @@ Use `npm run dist:mac` or `npm run dist:win` after validation. Run `npm run rele
 
 Existing revision-3 county data can receive matching shared edges with `npm run data:repair:geometry`. This changes geometry and parent outlines while preserving atom IDs, parent/city memberships and every numeric value. It keeps the original county files in `.cache/geometry-before-repair/` and marks a county complete only after its writes finish. The full audit requires geometry revision 2, valid serialized polygons, matching edges, agreement with the Census source footprint and no nonzero statistics on empty fragments. A previous release certificate is invalid after this change; rerun `npm run data:validate`.
 
+Noding retries use progressively finer tolerances without relaxing those guards. When GEOS flags a valid point where a hole touches its shell, an independent check verifies disjoint interiors, identical shared segments and matching vertices against every intersecting neighbor. Overlaps and partially noded edges still fail validation.
+
 ## Performance work
 
 `npm run benchmark:render -- . label` records the existing dense Los Angeles canvas benchmark with runtime, hardware, dataset hashes, raw samples and process-memory observations in `dist/benchmarks/`. Compare runs on the same machine, viewport and dataset with other heavy jobs stopped. It measures synchronous canvas rendering after initialization with synthetic election colors; it does not measure startup, block decoding, city edits or end-to-end input latency.

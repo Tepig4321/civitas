@@ -74,4 +74,14 @@ class GeometryTests(unittest.TestCase):
    self.assertEqual(atoms[i]['stats'],[i+1])
    self.assertEqual(atoms[i]['votes'],{'race':[0,1,0]})
    self.assertLess(geom.symmetric_difference(original[i]).area,2e-12)
+ def test_matching_coverage_checks_point_touching_holes_without_distortion(self):
+  left=Polygon([(-120.3381918,37.7098181),(-120.3381682,37.7095704),(-120.338212,37.709838),(-120.338211,37.709974),(-120.338208,37.710381),(-120.33821,37.710445),(-120.338211,37.710471),(-120.338212,37.710492),(-120.338213,37.710522),(-120.3381949,37.7104964)])
+  right=Polygon([(-120.3383509,37.7111554),(-120.3381998,37.7110963),(-120.3381541,37.7104389),(-120.3381949,37.7104964),(-120.338213,37.710522),(-120.338232,37.71108)],holes=[[(-120.3381949,37.7104965),(-120.3381951,37.710535),(-120.3382207,37.7107494),(-120.338213,37.710522)]])
+  self.assertTrue(left.relate_pattern(right,'F********'))
+  self.assertTrue(b.matching_coverage([left,right]))
+  self.assertFalse(b.matching_coverage([box(0,0,1,1),box(.9,0,2,1)]))
+  # A midpoint present on only one side remains an invalid shared edge.
+  extra_node=Polygon([(1,0),(2,0),(2,1),(1,1),(1,.5)])
+  self.assertFalse(b.matching_coverage([box(0,0,1,1),extra_node]))
+  self.assertFalse(b.matching_coverage([box(0,0,1,1),box(1,.25,2,.75)]))
 if __name__=='__main__':unittest.main()

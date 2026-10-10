@@ -3,7 +3,6 @@
 from pathlib import Path
 import argparse,gzip,json,importlib.util
 import numpy as np
-from shapely import coverage_is_valid
 from shapely.geometry import Polygon,MultiPolygon
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -39,7 +38,7 @@ def validate(out,completed=False,fixture=False):
   assert len(atoms)==report['atoms']
   geometries=[MultiPolygon([Polygon(poly[0],poly[1:]) for poly in a['polygons']]) for a in atoms]
   assert all(g.is_valid for g in geometries),'Invalid serialized atom geometry'
-  assert coverage_is_valid(geometries),'Atom edges must match without overlaps'
+  assert builder.matching_coverage(geometries),'Atom edges must match without overlaps'
   if fixture:source_geometries=[builder.decode_polygons(truth['sourceGeometry'])]
   else:
    import pyogrio.raw

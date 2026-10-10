@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pyogrio.raw
 from pyproj import Transformer
-from shapely import STRtree,from_wkb,make_valid,union_all,intersection,difference,set_precision,coverage_clean,coverage_is_valid
+from shapely import STRtree,from_wkb,make_valid,union_all,intersection,difference,set_precision,coverage_clean,coverage_is_valid,coverage_invalid_edges
 from shapely.geometry import Polygon,MultiPolygon,GeometryCollection,mapping,box
 from shapely.ops import transform
 
@@ -90,6 +90,38 @@ def encode_polygons(geom):
  # Shared vertices must retain identical doubles, including newly noded intersections.
  return [[[[x,y] for x,y in ring.coords] for ring in [p.exterior,*p.interiors]] for p in polygons(geom)]
 
+def matching_coverage(geoms):
+ if not all(g.is_valid for g in geoms):return False
+ if coverage_is_valid(geoms):return True
+ # GEOS can flag an exterior edge when a neighboring hole touches its shell
+ # at a shared vertex. Independently check every reported polygon against all
+ # neighbors: disjoint interiors, identical shared segments, fully noded points.
+ tree=STRtree(geoms);nodes={}
+ def node_sets(i):
+  if i not in nodes:
+   vertices=set();edges=set()
+   for poly in polygons(geoms[i]):
+    for ring in [poly.exterior,*poly.interiors]:
+     coords=list(ring.coords);vertices.update(coords)
+     edges.update(tuple(sorted((a,c))) for a,c in zip(coords,coords[1:]))
+   nodes[i]=(vertices,edges)
+  return nodes[i]
+ def shared_matches(shared,left,right):
+  if shared.is_empty:return True
+  if shared.geom_type=='Point':return tuple(shared.coords[0]) in left[0]&right[0]
+  if shared.geom_type=='LineString':
+   coords=list(shared.coords)
+   return all(tuple(sorted((a,c))) in left[1]&right[1] for a,c in zip(coords,coords[1:]))
+  return all(shared_matches(part,left,right) for part in shared.geoms)
+ for i,edge in enumerate(coverage_invalid_edges(geoms)):
+  if edge.is_empty:continue
+  for j in tree.query(geoms[i],predicate='intersects'):
+   j=int(j)
+   if i==j:continue
+   if not geoms[i].relate_pattern(geoms[j],'F********'):return False
+   if not shared_matches(geoms[i].boundary.intersection(geoms[j].boundary),node_sets(i),node_sets(j)):return False
+ return True
+
 def validate_coverage_footprint(geoms,source_geoms,boundary_tolerance=1e-8):
  source=polygonal(union_all(source_geoms));footprint=union_all(geoms)
  # Matching edges alone allow holes. Ignore only sub-millimetre movement along
@@ -128,7 +160,7 @@ def repair_coverage(geoms,source_geoms,gap_width=2e-7,snapping_distance=1e-9):
   fixed[owner]=polygonal(union_all([fixed[owner],part]))
  # Node the source-clipping intersections without moving its outlines materially.
  fixed=coverage_clean(fixed+[background],gap_width=0,snapping_distance=snapping_distance)[:-1]
- if not coverage_is_valid(fixed):raise RuntimeError('Repaired block edges do not form a valid coverage')
+ if not matching_coverage(fixed):raise RuntimeError('Repaired block edges do not form a valid coverage')
  validate_coverage_footprint(fixed,[source])
  return list(fixed)
 
