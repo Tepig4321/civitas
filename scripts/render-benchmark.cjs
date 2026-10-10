@@ -8,7 +8,7 @@ const {_electron:electron}=require('playwright');
   const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
   app=await electron.launch({args:[source,`--user-data-dir=${profile}`],env});
   await app.context().route('https://**',r=>r.abort());
-  const page=await app.firstWindow();page.on('pageerror',e=>console.error('Renderer',e.message));await page.waitForFunction(()=>!!window.CivitasApp);await page.locator('#home-create-btn').dispatchEvent('click');await page.waitForFunction(()=>!document.getElementById('app-view').hidden);
+  const page=await app.firstWindow();page.on('pageerror',e=>console.error('Renderer',e.message));await page.waitForFunction(()=>!!window.CivitasApp);await page.selectOption('#home-geo-select','precinct');await page.locator('#home-create-btn').dispatchEvent('click');await page.waitForFunction(()=>!document.getElementById('app-view').hidden);
   await page.evaluate(()=>CivitasApp.ready());
   const result=await page.evaluate(async()=>{
    const doc=await (await fetch('data/block-v1/CA/geometry/precincts-los-angeles.json')).json();

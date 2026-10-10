@@ -2554,7 +2554,7 @@ html, body {
   var placeLabelsBehind = true;
   var basemapOn = true;
   var shapeAlpha = 0.8;
-  var geoProj = null;
+  var geoProj = null, geoProjectionConfig = null;
   var basemapTemplate = null;
   var basemapMaxZoom = 14;
   var basemapMetaState = 'idle';
@@ -4045,6 +4045,7 @@ html, body {
     geometryReady = fetchJSON(geoDir + 'manifest.json')
       .then(function(manifest) {
         base = { x: 0, y: 0, w: manifest.width, h: manifest.height };
+        geoProjectionConfig = manifest.projection;
         geoProj = manifest.projection ? makeProjection(manifest.projection) : null;
         tileCache = {};
         tileQueue = [];
@@ -5805,6 +5806,7 @@ html, body {
     paintBy: function() { return paintBy; },
     race: function() { return activeRace; },
     shift: function() { return { from: shiftFromKey, to: shiftToKey }; },
+    projection: function() { return geoProjectionConfig; },
     project: function(lon, lat) { return geoProj.fwd(lon, lat); },
     parse: parseRings, path: function(s) { return shapePath(s, 0); },
     contains: function(s,x,y) { ctx.save(); ctx.setTransform(1,0,0,1,0,0); var hit = ctx.isPointInPath(shapePath(s,0),x,y); ctx.restore(); return hit; },

@@ -59,7 +59,8 @@
       }
       // Bound concurrent requests and memory use for municipalities crossing counties.
       for(const [file,keys] of batches) {
-        const data=await request({url:new URL(file,location.href).href,parents:keys,geography:bridge.geography()});
+        for(let offset=0;offset<keys.length;offset+=8) {
+        const data=await request({url:new URL(file,location.href).href,parents:keys.slice(offset,offset+8),geography:bridge.geography(),projection:bridge.projection?.()});
         if(token!==generation)throw new Error('The map changed while loading blocks.');
         statKeys=[...new Set([...data.statKeys,'dem','rep','other','shAd','shAr','shAo','shBd','shBr','shBo'])];
         for(const [id,records] of Object.entries(data.parents)) {
@@ -67,11 +68,13 @@
           if(parent._children)continue;
           parent._version=(parent._version||0)+1;
           parent._children=records.map(rec=>{
-            const g=geometry(rec.polygons),values={};
+            const g=rec.world?{polygons:rec.polygons,rings:rec.polygons.flat()}:geometry(rec.polygons),values={};
             data.statKeys.forEach((key,i)=>{values[key]=rec.stats[i];});
             return {...values,id:rec.id,blockId:rec.block,cityId:rec.city,_votes:rec.votes,_parent:parent,_polygons:g.polygons,rings:g.rings,paths:[null,null,null],bbox:bbox(g.rings),districtId:parent.districtId,estimated:rec.estimated,county:parent.county,precinct:'Block '+rec.block.slice(-4),fill:'#e3e5e9'};
           });
           for(const a of parent._children){a.bboxArea=(a.bbox[2]-a.bbox[0])*(a.bbox[3]-a.bbox[1]);a._atoms=[a];}
+        }
+        await new Promise(resolve=>setTimeout(resolve,0));
         }
       }
     }
@@ -229,7 +232,7 @@
       overlay(ctx,scale){if(bridge.paintBy()==='city'||document.getElementById('show-city-borders').checked){ctx.strokeStyle='#24cbd1';ctx.lineWidth=1.2/scale;for(const c of cities){if(hoverCity===c&&bridge.paintBy()==='city'){ctx.fillStyle='rgba(36,203,209,.14)';ctx.fill(bridge.path(c));ctx.lineWidth=2.5/scale;}ctx.stroke(bridge.path(c));ctx.lineWidth=1.2/scale;}}if(opened){ctx.strokeStyle='#24cbd1';ctx.lineWidth=2.5/scale;ctx.stroke(bridge.path(opened));}},
       endStroke(){sync();finish();bridge.refresh();},
       metadataChanged(text,fn){if(busy||bridge.readOnly()){updates();return;}begin(text);fn();sync();finish();bridge.refresh();},
-      reduceCount(n){for(const p of parents){p._version=(p._version||0)+1;if(p.districtId>n)p.districtId=null;if(p._children)for(const a of p._children)if(a.districtId>n)a.districtId=null;}},
+      reduceCount(n){const meta=bridge.meta();for(const section of [meta.names,meta.locked])for(const key of Object.keys(section))if(Number(key)>n)delete section[key];for(const p of parents){p._version=(p._version||0)+1;if(p.districtId>n)p.districtId=null;if(p._children)for(const a of p._children)if(a.districtId>n)a.districtId=null;}},
       exportState(){const state=snapshot();return {version:2,dataset:bridge.dataset(),populationBasis:state.meta.basis,unitAssignments:state.assignments,history:history.persistent()};},
       districtVotes(records,race){const result={};for(const r of records){const p=index[r.county+'|'+r.precinct];if(!p)continue;
         const pieces=p._children||[p];for(const a of pieces){if(a.districtId===null)continue;const votes=p._children?(a._votes[race.key]||[0,0,0]):[r.dem,r.rep,r.other];const v=result[a.districtId]||(result[a.districtId]=[0,0,0]);for(let i=0;i<3;i++)v[i]+=votes[i];}}
