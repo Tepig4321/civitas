@@ -127,7 +127,7 @@ def repair_coverage(geoms,source_geoms,gap_width=2e-7,snapping_distance=1e-9):
   owner=max(candidates,key=lambda i:(part.boundary.intersection(fixed[i].boundary).length,-int(i)))
   fixed[owner]=polygonal(union_all([fixed[owner],part]))
  # Node the source-clipping intersections without moving its outlines materially.
- fixed=coverage_clean(fixed+[background],gap_width=0,snapping_distance=1e-12)[:-1]
+ fixed=coverage_clean(fixed+[background],gap_width=0,snapping_distance=1e-9)[:-1]
  if not coverage_is_valid(fixed):raise RuntimeError('Repaired block edges do not form a valid coverage')
  validate_coverage_footprint(fixed,[source])
  return list(fixed)
