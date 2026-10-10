@@ -19,6 +19,7 @@
     "test": "node scripts/unit-tests.cjs",
     "test:editor": "node scripts/editor-smoke.cjs",
     "test:pointer": "node scripts/pointer-smoke.cjs",
+    "test:security": "node scripts/security-audit.cjs",
     "data:fetch": "node scripts/python.cjs scripts/fetch-geodata.py",
     "data:build": "node scripts/python.cjs scripts/build-block-data.py --resume",
     "data:validate": "node scripts/data.cjs validate",

@@ -43,6 +43,22 @@ const { prepare } = require('./test-environment.cjs');
     await page.setInputFiles('#home-import-file', { name: 'invalid.civitasmap', mimeType: 'application/json', buffer: Buffer.from('{}') });
     assert.equal((await rejected).message(), 'That file is not a Civitas map file.');
     assert.deepEqual(await stored(), beforeImport);
+    // Simulate a large File without allocating 128 MiB in every CI runner.
+    await page.evaluate(() => {
+      window.testFileReads = 0;
+      window.testOriginalRead = FileReader.prototype.readAsText;
+      FileReader.prototype.readAsText = function(...args) { testFileReads++;return testOriginalRead.apply(this,args); };
+      Object.defineProperty(File.prototype,'size',{configurable:true,get:()=>128*1024*1024+1});
+    });
+    try {
+      const oversized = page.waitForEvent('dialog');
+      await page.setInputFiles('#home-import-file', { name: 'oversized.civitasmap', mimeType: 'application/json', buffer: Buffer.from('{}') });
+      assert.equal((await oversized).message(), 'That map file exceeds the 128 MiB import limit.');
+      assert.equal(await page.evaluate(() => testFileReads), 0);
+      assert.deepEqual(await stored(), beforeImport);
+    } finally {
+      await page.evaluate(() => { delete File.prototype.size;FileReader.prototype.readAsText=testOriginalRead;delete window.testOriginalRead;delete window.testFileReads; });
+    }
     assert.equal(await page.evaluate(() => typeof polygonClipping.union), 'function');
     const roles = await app.evaluate(({ Menu }) => {
       const collect = menu => menu.items.flatMap(item => [item.role, ...(item.submenu ? collect(item.submenu) : [])]);
