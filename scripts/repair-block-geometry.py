@@ -59,9 +59,13 @@ if __name__=='__main__':
   # Separate counties have separate atomic outputs. Bound GEOS memory use rather
   # than creating one worker per county; each thread opens its own source dataset.
   with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-   futures=[pool.submit(repair,slug,args.resume) for slug in slugs]
+   futures={pool.submit(repair,slug,args.resume):slug for slug in slugs}
    try:
-    for future in as_completed(futures):future.result()
+    for future in as_completed(futures):
+     try:future.result()
+     except BaseException as error:
+      print('Failed',futures[future],str(error),flush=True)
+      raise
    except BaseException:
     for future in futures:future.cancel()
     raise
