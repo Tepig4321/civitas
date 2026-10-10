@@ -33,6 +33,9 @@ def validate(out,completed=False,fixture=False):
   assert len({a['id'] for a in atoms})==len(atoms),'Duplicate atom IDs'
   assert np.isfinite(matrix).all(),'Nonfinite statistics'
   assert len(atoms)==report['atoms']
+  for atom in atoms:
+   for race,values in atom['votes'].items():
+    assert len(values)==3 and all(type(value) is int and value>=0 for value in values),('Invalid integer votes',slug,atom['id'],race)
   race_matrices={race:np.array([a['votes'].get(race,[0,0,0]) for a in atoms],dtype=np.int64) for race in report['elections']}
   for geo in ['CA','CA-BG']:
    records=read(out/geo/'geometry'/f'precincts-{slug}.json')['records']
@@ -41,6 +44,7 @@ def validate(out,completed=False,fixture=False):
    assert len(index)==len(records),'Duplicate parent IDs'
    assert all(key in index for key in original_ids),'Lost legacy IDs'
    memberships=doc['parents'][geo]
+   assert set(memberships)==set(index),'Parent summaries/membership mismatch'
    indices=[i for members in memberships.values() for i in members]
    assert sorted(indices)==list(range(len(atoms))),'Atoms must belong to exactly one parent per geography'
    for key,members in memberships.items():

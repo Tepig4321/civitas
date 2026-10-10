@@ -56,4 +56,4 @@ async function check(root, project) {
   }
   return doc;
 }
-module.exports = { hash, inventory, requireStatewide, seal, check };
+module.exports = { hash, inventory, requireStatewide, sources, seal, check };

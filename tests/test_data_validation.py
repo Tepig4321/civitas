@@ -18,6 +18,10 @@ class DataValidationTests(unittest.TestCase):
   path=self.out/'atoms/alpine.json.gz';doc=json.loads(gzip.decompress(path.read_bytes()))
   members=next(m for m in doc['parents']['CA'].values() if m);members.append(members[0])
   path.write_bytes(gzip.compress(json.dumps(doc).encode()));self.rejected()
+ def test_rejects_fractional_atom_votes_before_integer_conversion(self):
+  path=self.out/'atoms/alpine.json.gz';doc=json.loads(gzip.decompress(path.read_bytes()))
+  doc['atoms'][0]['votes']['president-2024'][0]+=0.5
+  path.write_bytes(gzip.compress(json.dumps(doc).encode()));self.rejected()
  def test_rejects_changed_parent_election_total(self):
   path=self.out/'CA/president-2024/votes-alpine.json';doc=json.loads(path.read_text())
   doc['records'][0]['dem']+=1;path.write_text(json.dumps(doc));self.rejected()

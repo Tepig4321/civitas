@@ -12,10 +12,13 @@ async function main() {
     if (args.length) throw new Error('Use data:validate:completed or data:validate:fixture for previews.');
     await integrity.requireStatewide(dataset);
     const before = await integrity.inventory(dataset);
+    const codeBefore = await integrity.sources(root);
     const status = run(['scripts/validate-block-data.py']);
     if (status !== 0) { process.exitCode = status; return; }
     const after = await integrity.inventory(dataset);
-    if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error('Dataset changed during its audit. Stop the builder and retry.');
+    const codeAfter = await integrity.sources(root);
+    if (JSON.stringify(before) !== JSON.stringify(after) || JSON.stringify(codeBefore) !== JSON.stringify(codeAfter))
+      throw new Error('Dataset or audit code changed during validation. Stop the builder and retry.');
     await integrity.seal(dataset, root);
     console.log('Wrote statewide validation certificate.');
   } else throw new Error('Usage: node scripts/data.cjs validate|check');
