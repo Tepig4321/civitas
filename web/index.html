@@ -1148,6 +1148,17 @@ html, body {
 .lean-axis[hidden] { display: none; }
 .lean-readout { margin-top: 14px; min-height: 1.4em; font-size: 0.86rem; color: rgba(255, 255, 255, 0.85); }
 .lean-summary { margin-top: 10px; font-size: 0.8rem; color: rgba(255, 255, 255, 0.55); }
+/* Fine geography controls */
+.paint-by-row .district-tool-toggle { flex-wrap: wrap; }
+.editor-history { display:flex; gap:6px; margin:10px 0; }
+.editor-history button { flex:1; padding:7px; border:1px solid #555; border-radius:5px; background:transparent; color:inherit; cursor:pointer; }
+.editor-history button:disabled { opacity:.35; cursor:default; }
+.editor-population { display:block; margin:10px 0; font-size:12px; }
+.editor-population select { display:block; width:100%; margin-top:5px; padding:5px; }
+#block-done { width:100%; padding:8px; margin-top:8px; background:#24cbd1; color:#11212a; border:0; border-radius:5px; cursor:pointer; }
+#block-done[hidden], #editor-status[hidden] { display:none; }
+#editor-status { position:fixed; bottom:65px; left:16px; z-index:50; max-width:min(520px,85vw); padding:10px 14px; border-radius:6px; background:#15363c; color:#fff; font:13px system-ui; box-shadow:0 2px 12px #0005; pointer-events:none; }
+#editor-status.error { background:#742e31; }
 </style>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 
@@ -1251,12 +1262,20 @@ html, body {
       </button>
     </div>
     <div class="paint-by-row">
-      <div class="paint-by-label">Color By</div>
+      <div class="paint-by-label">Paint By</div>
       <div class="district-tool-toggle">
         <button class="district-tool-btn active" id="paintby-unit" type="button" data-geo-text="{Unit}">Precinct</button>
         <button class="district-tool-btn" id="paintby-county" type="button">County</button>
+        <button class="district-tool-btn" id="paintby-city" type="button">City</button>
+        <button class="district-tool-btn" id="paintby-block" type="button">Block</button>
       </div>
     </div>
+    <button id="block-done" type="button" hidden>Done</button>
+    <div class="editor-history"><button id="editor-undo" type="button" disabled>↶ Undo</button><button id="editor-redo" type="button" disabled>↷ Redo</button></div>
+    <label class="editor-population" for="population-basis">Balance districts using
+      <select id="population-basis"><option value="census">2020 Census</option><option value="adjusted">2020 California adjusted</option></select>
+    </label>
+    <label class="district-checkbox-row"><input type="checkbox" id="show-city-borders"><span>Show city borders</span></label>
     <label class="district-checkbox-row">
       <input type="checkbox" id="drag-paint">
       <span data-geo-text="Drag to paint/erase {units}">Drag to paint/erase precincts</span>
@@ -1521,9 +1540,19 @@ html, body {
 </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/polygon-clipping@0.15.7/dist/polygon-clipping.umd.js"></script>
+<div id="editor-status" role="status" aria-live="polite" hidden></div>
+<script src="vendor/polygon-clipping.umd.js"></script>
+<script src="lib/editor-core.js"></script>
+<script src="lib/persistence.js"></script>
+<script src="lib/editor-controller.js"></script>
 <script>
-(function() {
+(async function() {
+  var mapStorage;
+  try { mapStorage = await CivitasPersistence.open(window.localStorage); }
+  catch (error) { alert('Could not open saved maps: ' + error.message); return; }
+  var editor = null;
+  var populationBasis = 'census';
+  var DATASET_ID = 'ca-blocks-2020-cities-2025-v1';
   var canvas = document.getElementById('map');
   var ctx = canvas.getContext('2d');
   var loading = document.getElementById('loading');
@@ -1548,7 +1577,7 @@ html, body {
   var elMargin = document.getElementById('d-margin');
   function fillPopRow(prefix, values, isBG) {
     var onLayer = layerMode === 'population';
-    var L = popLayerFor(prefix === 'd' ? 'pop' : (onLayer ? popKey : 'pop'));
+    var L = popLayerFor(prefix === 'd' ? 'pop' : (onLayer ? popKey : (populationBasis === 'adjusted' ? 'pop20Adjusted' : 'pop20')));
     document.getElementById(prefix + '-pop-label').textContent = L.rowLabel + (!isBG || L.est ? ' (est.)' : '');
     document.getElementById(prefix + '-pop').textContent = layerText(values, L);
     if (prefix === 'd') {
@@ -1566,8 +1595,8 @@ html, body {
   var activeRace = null;
 
   var STATES = {
-    CA: { key: 'CA', base: 'CA', label: 'California', geo: 'precinct', dataDir: 'data/CA/', districts: 52, population: 39287377 },
-    'CA-BG': { key: 'CA-BG', base: 'CA', label: 'California', geo: 'blockgroup', dataDir: 'data/CA-BG/', districts: 52, population: 39287377 },
+    CA: { key: 'CA', base: 'CA', label: 'California', geo: 'precinct', dataDir: 'data/block-v1/CA/', districts: 52, population: 39538223 },
+    'CA-BG': { key: 'CA-BG', base: 'CA', label: 'California', geo: 'blockgroup', dataDir: 'data/block-v1/CA-BG/', districts: 52, population: 39538223 },
   };
   var GEO_LABELS = { precinct: 'Precincts (2024)', blockgroup: 'Block Groups' };
   var GEO_UNITS = { precinct: ['precinct', 'precincts'], blockgroup: ['block group', 'block groups'] };
@@ -1608,15 +1637,15 @@ html, body {
 
   function allocateMapId() {
     var n = 0;
-    try { n = parseInt(localStorage.getItem('civitas-next-map-id'), 10) || 0; } catch (err) {}
+    try { n = parseInt(mapStorage.getItem('civitas-next-map-id'), 10) || 0; } catch (err) {}
     n += 1;
-    try { localStorage.setItem('civitas-next-map-id', String(n)); } catch (err) {}
+    try { mapStorage.setItem('civitas-next-map-id', String(n)); } catch (err) {}
     return n;
   }
 
   function clearCurrentDraft() {
     if (currentMapId !== null) {
-      try { localStorage.removeItem(draftKey(currentMapId)); } catch (err) {}
+      try { mapStorage.removeItem(draftKey(currentMapId)); } catch (err) {}
     }
     currentMapId = null;
     currentSid = null;
@@ -1678,6 +1707,7 @@ html, body {
   var POP_LAYERS = [
     { key: 'pop', label: 'ACS (2024)', rowLabel: 'Population (2024)', est: false },
     { key: 'pop20', label: 'Census (2020)', rowLabel: 'Pop. Census (2020)', est: false },
+    { key: 'pop20Adjusted', label: 'California adjusted (2020)', rowLabel: 'Pop. CA adjusted (2020)', est: false },
     { key: 'pop10', label: 'Census (2010)', rowLabel: 'Pop. Census (2010)', est: true },
     { key: 'pop00', label: 'Census (2000)', rowLabel: 'Pop. Census (2000)', est: true },
   ];
@@ -2248,7 +2278,7 @@ html, body {
     return rings;
   }
 
-  var MIN_RING_AREA = 1;
+  var MIN_RING_AREA = 1e-10;
 
   function ringArea(ring) {
     var area = 0;
@@ -3167,6 +3197,7 @@ html, body {
       });
     }
 
+    if (editor) editor.overlay(ctx, cssScale);
     if (basemapActive && placeLabelsOn && !placeLabelsBehind) drawBasemapLabels(cssScale);
     drawHoverOutline();
   }
@@ -3268,8 +3299,10 @@ html, body {
   function pickAt(clientX, clientY, strict) {
     var w = screenToWorld(clientX, clientY);
     var wx = w.x, wy = w.y;
-    var candidates = [];
-    for (var i = 0; i < shapes.length; i++) {
+    if (editor) editor.pointer(wx, wy);
+    var candidates = editor && editor.pickCandidates(wx, wy);
+    if (!candidates) candidates = [];
+    if (!editor) for (var i = 0; i < shapes.length; i++) {
       var s = shapes[i], b = s.bbox;
       if (wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3]) candidates.push(s);
     }
@@ -3291,24 +3324,8 @@ html, body {
   var isPainting = false, lastPaintShape = null, strokeTool = 'paint';
 
   function applyToolTo(s, tool) {
-    if (mapReadOnly) return [];
-    var targets = paintBy === 'county' ? (shapesByCounty[s.county] || [s]) : [s];
-    var changed = [];
-    targets.forEach(function(x) {
-      if (x.districtId !== null && districtLocked[x.districtId]) return;
-      if (tool === 'eraser') {
-        if (x.districtId === null) return;
-        markDistrictDirty(x.districtId);
-        x.districtId = null;
-      } else {
-        if (x.districtId === activeDistrictId) return;
-        markDistrictDirty(x.districtId);
-        markDistrictDirty(activeDistrictId);
-        x.districtId = activeDistrictId;
-      }
-      changed.push(x);
-    });
-    return changed;
+    if (mapReadOnly || !editor) return [];
+    return editor.apply(s, tool, paintBy, activeDistrictId, districtLocked);
   }
 
   var lastPaintCounty = null;
@@ -3345,6 +3362,7 @@ html, body {
     lastPaintShape = null;
     try { canvas.releasePointerCapture(activePointer); } catch (err) {}
     activePointer = null;
+    if (editor) editor.endStroke();
     if (strokeShapes.length) {
       hasUnsavedChanges = true;
       recomputeDistricts();
@@ -3355,7 +3373,7 @@ html, body {
   canvas.addEventListener('pointerdown', function(e) {
     if (e.button !== undefined && e.button !== 0) return;
     var canPaint = activeTool === 'paint' && activeDistrictId !== null && !districtLocked[activeDistrictId];
-    if (dragPaintCheckbox.checked && (canPaint || activeTool === 'eraser')) {
+    if (dragPaintCheckbox.checked && paintBy !== 'city' && (canPaint || activeTool === 'eraser')) {
       isPainting = true;
       strokeTool = activeTool;
       activePointer = e.pointerId;
@@ -3413,7 +3431,9 @@ html, body {
         showDetail(s);
         var canPaintClick = activeTool === 'paint' && activeDistrictId !== null && !districtLocked[activeDistrictId];
         if (canPaintClick || activeTool === 'eraser') {
-          if (applyToolTo(s, activeTool).length) {
+          var changed = applyToolTo(s, activeTool);
+          if (editor) editor.endStroke();
+          if (changed.length) {
             hasUnsavedChanges = true;
             recomputeDistricts();
           }
@@ -3614,10 +3634,12 @@ html, body {
   });
 
   var paintBy = 'unit';
-  var paintByButtons = { unit: document.getElementById('paintby-unit'), county: document.getElementById('paintby-county') };
+  var paintByButtons = { unit: document.getElementById('paintby-unit'), county: document.getElementById('paintby-county'), city: document.getElementById('paintby-city'), block: document.getElementById('paintby-block') };
   Object.keys(paintByButtons).forEach(function(k) {
     paintByButtons[k].addEventListener('click', function() {
+      if (editor && paintBy !== k) editor.closeBlocks();
       paintBy = k;
+      draw();
       Object.keys(paintByButtons).forEach(function(o) { paintByButtons[o].classList.toggle('active', o === k); });
       if (k === 'county' && !showCountyBordersCheckbox.checked) {
         showCountyBordersCheckbox.checked = true;
@@ -4030,6 +4052,8 @@ html, body {
               precinct: g.precinct,
               county: g.county,
               dem: 0, rep: 0, other: 0, totreg: g.totreg, pop: g.pop || 0, pop20: g.pop20 || 0, pop10: g.pop10 || 0, pop00: g.pop00 || 0, eth_white: g.eth_white || 0, eth_black: g.eth_black || 0, eth_hisp: g.eth_hisp || 0, eth_asian: g.eth_asian || 0, eth_native: g.eth_native || 0, eth_pacific: g.eth_pacific || 0, edu_total: g.edu_total || 0, age_total: g.age_total || 0, lang_total: g.lang_total || 0, eng_vw: g.eng_vw || 0, eng_lvw: g.eng_lvw || 0, lang_english: g.lang_english || 0, lang_spanish: g.lang_spanish || 0, lang_indo: g.lang_indo || 0, lang_asian: g.lang_asian || 0, lang_other: g.lang_other || 0, orig_total: g.orig_total || 0, orig_instate: g.orig_instate || 0, orig_outstate: g.orig_outstate || 0, orig_foreign: g.orig_foreign || 0, cit_total: g.cit_total || 0, cit_yes: g.cit_yes || 0, age_sum: g.age_sum || 0, age_avg: g.age_total > 0 ? g.age_sum / g.age_total : 0, age_u18: g.age_u18 || 0, age_18_29: g.age_18_29 || 0, age_30_44: g.age_30_44 || 0, age_45_64: g.age_45_64 || 0, age_65: g.age_65 || 0, edu_coll: g.edu_coll || 0, edu_noncoll: g.edu_noncoll || 0, edu_lths: g.edu_lths || 0, edu_hs: g.edu_hs || 0, edu_somecol: g.edu_somecol || 0, edu_bach: g.edu_bach || 0, edu_grad: g.edu_grad || 0, inc_total: g.inc_total || 0, inc_lt50k: g.inc_lt50k || 0, inc_50_100k: g.inc_50_100k || 0, inc_gt100k: g.inc_gt100k || 0, inc_lt30k: g.inc_lt30k || 0, inc_30_50k: g.inc_30_50k || 0, inc_50_75k: g.inc_50_75k || 0, inc_75_100k: g.inc_75_100k || 0, inc_100_200k: g.inc_100_200k || 0, inc_gt200k: g.inc_gt200k || 0, inc_med: g.inc_med || 0, inc_medw: g.inc_med > 0 ? g.inc_med * (g.inc_total || 0) : 0, inc_medhh: g.inc_med > 0 ? (g.inc_total || 0) : 0, vap: g.vap || 0, vap20: g.vap20 || 0, vap22: g.vap22 || 0, cvap: g.cvap || 0,
+              pop20Adjusted: g.pop20Adjusted || 0,
+              atomFile: g.atomFile, atomCount: g.atomCount, _id: g.county + '|' + g.precinct,
               margin: null,
               districtId: null,
               bbox: b,
@@ -4043,6 +4067,7 @@ html, body {
         }
         mapTotalsCache = null;
         markAllBordersDirty();
+        if (editor) editor.initialize(shapes);
       });
     return geometryReady;
   }
@@ -4089,9 +4114,10 @@ html, body {
     .then(function(records) {
       var noDataCount = 0;
       var countyCounts = {};
-      if (race.sparse) {
-        for (var j = 0; j < shapes.length; j++) {
-          shapes[j].dem = 0; shapes[j].rep = 0; shapes[j].other = 0; shapes[j].margin = null; shapes[j].lead = null;
+      {
+        var parentShapes = editor ? editor.parents : shapes;
+        for (var j = 0; j < parentShapes.length; j++) {
+          parentShapes[j].dem = 0; parentShapes[j].rep = 0; parentShapes[j].other = 0; parentShapes[j].margin = null; parentShapes[j].lead = null;
         }
       }
       for (var i = 0; i < records.length; i++) {
@@ -4115,46 +4141,25 @@ html, body {
           countyCounts[c].toLocaleString() + '</span></div>';
       }).join('');
       var isBG = currentState.geo === 'blockgroup';
-      var lede = isBG
-        ? 'Block Group boundaries are 2025 Census TIGER/Line. 2024 general election results are precinct results from the ' +
-          '<a href="https://redistrictingdatahub.org" target="_blank" rel="noopener">Redistricting Data Hub</a>, ' +
-          'compiled from the California Statewide Database (Madera County’s results were processed separately ' +
-          'by RDH and merged in; retrieved December 2, 2025), then allocated to block groups. 2022 general election results are ' +
-          'from the <a href="https://statewidedatabase.org" target="_blank" rel="noopener">California Statewide Database</a> ' +
-          '(statement of vote by SR precinct, matched to its 2022 master-precinct map) and were allocated directly from the 2022 precincts ' +
-          'to block groups by overlapping area. 2020, 2018 and 2016 general election results come from the same source and were allocated the same way.'
-        : 'Precinct boundaries and 2024 general election results are from the ' +
-          '<a href="https://redistrictingdatahub.org" target="_blank" rel="noopener">Redistricting Data Hub</a>, ' +
-          'compiled from the California Statewide Database (Madera County’s results were processed separately ' +
-          'by RDH and merged in). Retrieved December 2, 2025. 2022 general election results are from the ' +
-          '<a href="https://statewidedatabase.org" target="_blank" rel="noopener">California Statewide Database</a> ' +
-          '(statement of vote by SR precinct, matched to its 2022 master-precinct map) and were allocated to these 2024 precincts ' +
-          'by overlapping area, so 2022 figures for individual precincts are estimates. 2020, 2018 and 2016 general election results come from the ' +
-          'same source and were allocated the same way.';
-      var geoCaveat = isBG
-        ? '<li><strong>Block Group results are estimates.</strong> Precinct votes were allocated to block groups in ' +
-          'proportion to overlapping area, assuming votes are spread evenly within each precinct. Totals are preserved, ' +
-          'but individual block groups can be off, especially where a precinct is only partly populated.</li>'
-        : '';
-      var popNote = isBG
-        ? '<li>Population: the latest ACS 5-year estimate (2020\u20132024, table B01003) is used for district totals; 2020 is the ' +
-          'Decennial Census (PL 94-171). 2010 and 2000 Census (SF1) block counts were assigned to today\u2019s block groups by ' +
-          'each block\u2019s internal point (marked est., since block-group boundaries changed). ACS values carry a margin of error. Ethnicity is ACS 5-year (2020–2024, table B03002): Hispanic or Latino of any race, plus non-Hispanic ' +
-          'White, Black, Native (American Indian and Alaska Native) and Pacific (Native Hawaiian and Other Pacific Islander) alone, as a ' +
-          'share of total population. Multiracial and other groups are not shown, so the shares do not sum to 100%. "Most Prevalent" colors each area by its largest of these six groups. ' +
-          'Education is ACS 5-year (2020–2024, table B15003), as a share of the population 25 and over: College+ is anyone with at least a ' +
-          'bachelor’s degree; Non-College is everyone else. The five attainment levels are Less than High School (no diploma), High School ' +
-          '(diploma or GED), Some College (some college or an associate’s degree), Bachelor’s Degree and Graduate Degree+ (master’s, professional or doctorate). ' +
-          'Voting age population (18+) for 2020 is the Decennial Census (PL 94-171, table P3); the ACS (2024) VAP is the ACS 5-year (2020–2024, table B01001) total minus those under 18, and citizen voting age population (CVAP) comes from the Census Bureau’s CVAP Special Tabulation of that same ACS. The 2020 Census did not ask about citizenship, so there is no Census CVAP. Median household income is the ACS 5-year median (table B19013) for each block group; for precincts, districts, counties and the whole map it is the household-weighted average of the block-group medians, an approximation rather than a true median. Income brackets are ACS 5-year (2020–2024, table B19001, household income), as a share of all households, shown in three brackets ' +
-          '(under $50K, $50K–$100K, $100K+) or six (under $30K, $30K–$50K, $50K–$75K, $75K–$100K, $100K–$200K, $200K+).</li>'
-        : '<li><strong>Precinct population is an estimate.</strong> Block-group population (2024 ACS 5-year, 2020, 2010 and 2000 Census) ' +
-          'was allocated to precincts in proportion to overlapping area, assuming people are spread evenly within each block group. ' +
-          'Statewide totals are preserved, but individual precincts can be off.</li>';
+      var lede = '2020 Census blocks are partitioned at precinct, block-group and incorporated-city boundaries. ' +
+        'Both map types aggregate the same pieces. The city tool excludes Census-designated places. Sources: ' +
+        '<a href="https://www.census.gov/programs-surveys/decennial-census/about/rdo/summary-files.html" target="_blank" rel="noopener">Census PL 94-171</a>, ' +
+        '<a href="https://www.census.gov/geographies/mapping-files/time-series/geo/tiger-line-file.html" target="_blank" rel="noopener">2020 blocks and 2025 incorporated places</a>, and ' +
+        '<a href="https://statewidedatabase.org" target="_blank" rel="noopener">California Statewide Database</a>. ' +
+        '2016–2020 elections use published block allocations; 2022 and 2024 use voter-registration shares from SR precincts to blocks. ' +
+        'Corrected RDH Madera 2024 results and contests without matching block sources are allocated from existing precinct results.';
+      var geoCaveat = '<li><strong>Split statistics are estimates.</strong> A block cut by any boundary uses equal-area allocation. ' +
+        'Integer totals are conserved; population and votes within a block are not observed at this finer scale. ' +
+        'Geometry follows the bundled source boundaries; Census outlines are geographic representations rather than surveys.</li>';
+      var popNote = '<li>District balancing defaults to original 2020 Census population. The per-map selector offers California adjusted counts. ' +
+        'ACS 2020–2024 population, ethnicity, education, income, age, language, origin and citizenship remain analysis estimates, allocated from existing block-group data. ' +
+        'Earlier population and VAP/CVAP fields retain their source vintages. ACS margins of error are not propagated. ' +
+        'Income medians for combined areas are household-weighted averages of block-group medians, not true medians.</li>';
       var originNote = '<li>Place of origin (born in-state, out-of-state or abroad, ACS table B05002) and citizenship (table B05001) are only published down to Census tracts, so each ' +
         (isBG ? 'block group' : 'precinct') + ' gets the shares of the tract(s) it falls in. Citizen % is U.S.-born plus naturalized citizens, as a share of total population.</li>';
       var langNote = '<li>English proficiency and language at home are ACS 5-year table B16004 (population 5 and over). English Very Well + includes people who speak only English; ' +
         'Language at Home groups the language spoken at home as English only, Spanish, Other Indo-European, Asian / Pacific Island, or Other.</li>';
-      var noSplit = isBG ? '' : '<li>No precinct is split across congressional, state senate, or state assembly districts in this dataset.</li>';
+      var noSplit = '<li>District balancing uses original 2020 Census block counts by default. California-adjusted counts are available in the population setting. City boundaries are incorporated places from TIGER/Line 2025. Block pieces cut by parent or city boundaries use estimated equal-area shares; all splits preserve totals.</li><li>Other demographic layers are allocated from the original ACS block-group data to census subunits using population, voting-age, or household weights. Historical elections use published SWDB block allocations; 2022 and 2024 use registration-share block crosswalks. Corrected Madera 2024 results are retained. All detailed data are bundled for offline editing.</li>';
       document.getElementById('panel-sources').innerHTML =
         '<h3>Data sources</h3>' +
         '<p class="sources-lede">' + lede + '</p>' +
@@ -4253,13 +4258,9 @@ html, body {
   function saveDraftNow() {
     saveDraftTimer = null;
     if (currentMapId === null) return;
-    var assignments = {};
-    for (var i = 0; i < shapes.length; i++) {
-      var s = shapes[i];
-      if (s.districtId !== null) assignments[s.county + '|' + s.precinct] = s.districtId;
-    }
+    var assignments = legacyAssignments();
     try {
-      localStorage.setItem(draftKey(currentMapId), JSON.stringify({
+      mapStorage.setItem(draftKey(currentMapId), JSON.stringify({
         state: currentState ? currentState.key : 'CA',
         count: districtCount,
         mode: districtColorMode,
@@ -4268,10 +4269,13 @@ html, body {
         locked: districtLocked,
         name: mapNameInput.value,
         dirty: hasUnsavedChanges,
+        ...(editor ? editor.exportState() : {}),
       }));
     } catch (err) {}
   }
-  mapNameInput.addEventListener('input', saveDraft);
+  mapNameInput.addEventListener('focus', function() { if (editor) editor.begin('Rename map'); });
+  mapNameInput.addEventListener('blur', function() { if (editor) editor.finish(); });
+  mapNameInput.addEventListener('input', function() { hasUnsavedChanges = true; saveDraft(); });
 
   var districtPlaceholder = document.getElementById('district-placeholder');
   var districtDetail = document.getElementById('district-detail');
@@ -4340,10 +4344,12 @@ html, body {
   function commitRenameActiveDistrict() {
     if (diRenameCancelled) { diRenameCancelled = false; return; }
     if (activeDistrictId === null) { diNameInput.hidden = true; diName.hidden = false; return; }
+    if (editor) editor.begin('Rename district');
     var k = activeDistrictId;
     var v = diNameInput.value.trim();
     if (v && v !== 'District ' + k) districtNames[k] = v; else delete districtNames[k];
     hasUnsavedChanges = true;
+    if (editor) editor.finish();
     saveDraft();
     updateDistrictInfo();
     renderDistrictList();
@@ -4402,7 +4408,7 @@ html, body {
   function updateIdealPopulation() {
     var totals = mapTotalsCache;
     if (!totals) {
-      totals = { pop: 0, pop20: 0, pop10: 0, pop00: 0 };
+      totals = { pop: 0, pop20: 0, pop20Adjusted: 0, pop10: 0, pop00: 0 };
       ETH_GROUPS.forEach(function(L) { totals[L.key] = 0; });
       EDU_KEYS.forEach(function(k) { totals[k] = 0; });
       AGE_KEYS.forEach(function(k) { totals[k] = 0; });
@@ -4418,9 +4424,9 @@ html, body {
       if (shapes.length) mapTotalsCache = totals;
     }
     mapTotals = totals;
-    var total = totals.pop;
+    var total = totals[populationBasis === 'adjusted' ? 'pop20Adjusted' : 'pop20'];
     Object.keys(totals).forEach(function(k) { idealPops[k] = districtCount > 0 ? totals[k] / districtCount : 0; });
-    idealPopulation = idealPops.pop;
+    idealPopulation = idealPops[populationBasis === 'adjusted' ? 'pop20Adjusted' : 'pop20'];
     if (districtCount > 0 && total > 0) {
       districtIdealEl.textContent = Math.round(idealPopulation).toLocaleString() + ' people per district';
       districtIdealEl.hidden = false;
@@ -4430,7 +4436,7 @@ html, body {
   }
 
   function zeroStats() {
-    var z = { dem: 0, rep: 0, other: 0, pop: 0, pop20: 0, pop10: 0, pop00: 0, inc_med: 0, margin: null, count: 0 };
+    var z = { dem: 0, rep: 0, other: 0, pop: 0, pop20: 0, pop10: 0, pop00: 0, pop20Adjusted: 0, balancePop: 0, inc_med: 0, margin: null, count: 0 };
     ETH_GROUPS.forEach(function(L) { z[L.key] = 0; });
     EDU_KEYS.forEach(function(k) { z[k] = 0; });
     AGE_KEYS.forEach(function(k) { z[k] = 0; });
@@ -4443,6 +4449,7 @@ html, body {
   }
 
   function recomputeDistricts() {
+    if (editor) editor.sync();
     updateIdealPopulation();
     districtStats = {};
     for (var k = 1; k <= districtCount; k++) districtStats[k] = zeroStats();
@@ -4456,6 +4463,8 @@ html, body {
       d.other += s.other;
       d.pop += s.pop;
       d.pop20 += s.pop20;
+      d.pop20Adjusted += s.pop20Adjusted || 0;
+      d.balancePop += populationBasis === 'adjusted' ? (s.pop20Adjusted || 0) : s.pop20;
       d.pop10 += s.pop10;
       d.pop00 += s.pop00;
       for (var q = 0; q < ETH_GROUPS.length; q++) d[ETH_GROUPS[q].key] += s[ETH_GROUPS[q].key];
@@ -4514,10 +4523,12 @@ html, body {
           var renameCancelled = false;
           var commitRename = function() {
             if (renameCancelled) { renameCancelled = false; return; }
+            if (editor) editor.begin('Rename district');
             var v = nameInput.value.trim();
             if (v && v !== 'District ' + k) districtNames[k] = v; else delete districtNames[k];
             editingDistrictId = null;
             hasUnsavedChanges = true;
+            if (editor) editor.finish();
             saveDraft();
             renderDistrictList();
           };
@@ -4537,11 +4548,11 @@ html, body {
         var badge = document.createElement('span');
         badge.className = 'district-count-badge';
         if (idealPopulation > 0) {
-          badge.textContent = formatDeviation(stats.pop || 0);
+          badge.textContent = formatDeviation(stats.balancePop || 0);
           badge.title = 'Population deviation from the ' + Math.round(idealPopulation).toLocaleString() + ' ideal';
           var pctBadge = document.createElement('span');
           pctBadge.className = 'district-pct-badge';
-          pctBadge.textContent = formatDeviationPct(stats.pop || 0);
+          pctBadge.textContent = formatDeviationPct(stats.balancePop || 0);
           pctBadge.title = badge.title;
           btn.appendChild(badge);
           btn.appendChild(pctBadge);
@@ -4559,7 +4570,9 @@ html, body {
         lockBtn.addEventListener('click', function(e) {
           e.stopPropagation();
           if (mapReadOnly) { flashReadOnly(); return; }
+          if (editor) editor.begin('Change district lock');
           districtLocked[k] = !districtLocked[k];
+          if (editor) editor.finish();
           hasUnsavedChanges = true;
           saveDraft();
           renderDistrictList();
@@ -4584,7 +4597,10 @@ html, body {
   function setDistrictCount(n) {
     n = Math.max(0, Math.min(1000, n | 0));
     if (mapReadOnly) { districtCountInput.value = districtCount; flashReadOnly(); return; }
+    if (editor && editor.busy) { districtCountInput.value = districtCount; return; }
     if (n === districtCount) return;
+    if (editor) editor.begin('Change district count');
+    if (editor) editor.reduceCount(n);
     if (n < districtCount) {
       for (var i = 0; i < shapes.length; i++) {
         if (shapes[i].districtId !== null && shapes[i].districtId > n) {
@@ -4597,14 +4613,18 @@ html, body {
     districtCount = n;
     districtCountInput.value = n;
     hasUnsavedChanges = true;
+    if (editor) { editor.sync(); editor.finish(); }
     recomputeDistricts();
   }
 
   function setDistrictColorMode(mode) {
+    if (mapReadOnly || (editor && editor.busy)) return;
+    if (editor) editor.begin('Change district display');
     districtColorMode = mode;
     districtModeByDistrictBtn.classList.toggle('active', mode === 'by-district');
     districtModeByLeanBtn.classList.toggle('active', mode === 'by-lean');
     if (!mapReadOnly) hasUnsavedChanges = true;
+    if (editor) editor.finish();
     recomputeDistricts();
   }
 
@@ -4622,7 +4642,7 @@ html, body {
 
   function readSavedMaps() {
     try {
-      var raw = localStorage.getItem(DISTRICTS_STORAGE_KEY);
+      var raw = mapStorage.getItem(DISTRICTS_STORAGE_KEY);
       return raw ? JSON.parse(raw) : {};
     } catch (err) {
       return {};
@@ -4630,7 +4650,7 @@ html, body {
   }
 
   function writeSavedMaps(all) {
-    localStorage.setItem(DISTRICTS_STORAGE_KEY, JSON.stringify(all));
+    mapStorage.setItem(DISTRICTS_STORAGE_KEY, JSON.stringify(all));
   }
 
   function flashNameInputError() {
@@ -4661,21 +4681,20 @@ html, body {
     return saveCurrentMap();
   }
 
-  function saveCurrentMap() {
+  async function saveCurrentMap() {
     if (mapReadOnly) return saveCopyOfSharedMap();
+    if (editor && editor.busy) { editor.notice('Wait for the current map operation to finish.'); return false; }
+    if (editor) editor.finish();
     if (CLOUD_API && !cloudUser) { openAccountModal('login', 'Log in or sign up to save your map.'); return false; }
     var name = mapNameInput.value.trim();
     if (!name) { flashNameInputError(); return false; }
-    var assignments = {};
-    for (var i = 0; i < shapes.length; i++) {
-      var s = shapes[i];
-      if (s.districtId !== null) assignments[s.county + '|' + s.precinct] = s.districtId;
-    }
+    var assignments = legacyAssignments();
     if (currentMapId === null) {
       currentMapId = allocateMapId();
       location.hash = currentSid ? 'map=' + currentSid : 'draft=' + currentMapId;
     }
     var all = readSavedMaps();
+    Object.keys(all).forEach(function(n) { if (all[n].id === currentMapId && n !== name) delete all[n]; });
     if (currentSid) {
       // Renamed since the last save: drop the old entry for this same map so it isn't listed twice.
       Object.keys(all).forEach(function(n) { if (all[n].sid === currentSid && n !== name) delete all[n]; });
@@ -4690,16 +4709,21 @@ html, body {
       assignments: assignments,
       names: districtNames,
       locked: districtLocked,
+      ...(editor ? editor.exportState() : {}),
     };
     try {
-      writeSavedMaps(all);
+      await mapStorage.batch([
+        [DISTRICTS_STORAGE_KEY, JSON.stringify(all)],
+        [draftKey(currentMapId), JSON.stringify({ ...all[name], name: name, dirty: false })]
+      ]);
       cloudPush(name);
       renderHomeSavedList();
       hasUnsavedChanges = false;
-      saveDraft();
       flashSaveButton();
       return true;
     } catch (err) {
+      hasUnsavedChanges = true;
+      if (editor) editor.notice('Could not save the map: ' + err.message, true, true);
       return false;
     }
   }
@@ -4874,41 +4898,31 @@ html, body {
   }
 
   // opts.readOnly: someone else's map opened from a shared link. Its site-wide id is payload.sid.
-  function applySavedPayload(name, payload, opts) {
+  async function applySavedPayload(name, payload, opts) {
     opts = opts || {};
-    var stateKey = payload.state || 'CA';
-    currentSid = payload.sid || null;
-    if (opts.readOnly) {
-      currentMapId = null;   // no local draft for a map that isn't yours
-    } else {
-      currentMapId = (typeof payload.id === 'number') ? payload.id : allocateMapId();
-    }
-    location.hash = currentSid ? 'map=' + currentSid : 'draft=' + currentMapId;
-    openMap(stateKey);
-    loadGeometry().then(function() {
-      // An empty {} can arrive from the server as [], which would silently drop later edits when saved.
-      var asObj = function(x) { return x && typeof x === 'object' && !Array.isArray(x) ? x : {}; };
-      var assignments = asObj(payload.assignments);
-      markAllBordersDirty();
-      for (var i = 0; i < shapes.length; i++) {
-        var s = shapes[i];
-        var key = s.county + '|' + s.precinct;
-        s.districtId = Object.prototype.hasOwnProperty.call(assignments, key) ? assignments[key] : null;
-      }
-      activeDistrictId = null;
-      editingDistrictId = null;
-      districtCount = Math.max(0, Math.min(1000, payload.count | 0));
-      districtCountInput.value = districtCount;
-      districtColorMode = payload.mode === 'by-lean' ? 'by-lean' : 'by-district';
-      districtModeByDistrictBtn.classList.toggle('active', districtColorMode === 'by-district');
-      districtModeByLeanBtn.classList.toggle('active', districtColorMode === 'by-lean');
-      districtNames = asObj(payload.names);
-      districtLocked = asObj(payload.locked);
-      mapNameInput.value = name;
-      hasUnsavedChanges = false;
+    try {
+      if (payload.version && payload.version > 2) throw new Error('This map was created by a newer Civitas version.');
+      currentSid = payload.sid || null;
+      currentMapId = opts.readOnly ? null : (typeof payload.id === 'number' ? payload.id : allocateMapId());
+      location.hash = currentSid ? 'map=' + currentSid : 'draft=' + currentMapId;
+      openMap(payload.state || 'CA');
+      await loadGeometry();
+      activeDistrictId = null; editingDistrictId = null;
+      await editor.restore(payload, name);
       setReadOnly(!!opts.readOnly, name);
-      recomputeDistricts();
-    });
+      hasUnsavedChanges = opts.draft ? !!payload.dirty : false;
+      if (!payload.dataset && !opts.readOnly) {
+        mapStorage.backup('map-v1-' + currentMapId, JSON.stringify({ name: name, payload: payload }));
+        if (!opts.draft && !opts.importing) {
+          var all = readSavedMaps();
+          all[name] = { ...payload, id: currentMapId, ...editor.exportState() };
+          writeSavedMaps(all);
+        }
+        await mapStorage.flush();
+      }
+      saveDraftNow(); await mapStorage.flush();
+      return true;
+    } catch (error) { if (editor) editor.notice('Could not open this map: ' + error.message, true, true); return false; }
   }
 
   // Open the map behind a shared link (#map=<id>). The server says whether the viewer owns it.
@@ -5000,6 +5014,7 @@ html, body {
     currentSid = null;
     location.hash = 'draft=' + currentMapId;
     openMap(stateKey);
+    if (editor) editor.resetMap();
     setReadOnly(false);
     activeDistrictId = null;
     editingDistrictId = null;
@@ -5076,6 +5091,7 @@ html, body {
   }
 
   function goHome() {
+    if (editor) editor.closeBlocks();
     closePanel();
     clearCurrentDraft();
     document.getElementById('app-view').hidden = true;
@@ -5100,13 +5116,13 @@ html, body {
     goHome();
   });
 
-  document.getElementById('unsaved-save-btn').addEventListener('click', function() {
+  document.getElementById('unsaved-save-btn').addEventListener('click', async function() {
     if (!mapNameInput.value.trim()) {
       unsavedModal.hidden = true;
       flashNameInputError();
       return;
     }
-    var ok = saveCurrentMap();
+    var ok = await saveCurrentMap();
     unsavedModal.hidden = true;
     if (ok) goHome();
   });
@@ -5122,39 +5138,12 @@ html, body {
   function restoreFromHash() {
     var shared = /map=(\d+)/.exec(location.hash);
     if (shared && CLOUD_API) { loadSharedMap(parseInt(shared[1], 10)); return; }
-    // #draft=N is a map in progress in this browser. (Without the server, e.g. a local copy, #map=N means the same.)
     var m = /draft=(\d+)/.exec(location.hash) || (CLOUD_API ? null : shared);
     if (!m) return;
-    var id = parseInt(m[1], 10);
-    var raw;
-    try { raw = localStorage.getItem(draftKey(id)); } catch (err) { raw = null; }
+    var raw = mapStorage.getItem(draftKey(parseInt(m[1], 10)));
     if (!raw) return;
-    var draft;
-    try { draft = JSON.parse(raw); } catch (err) { return; }
-    currentMapId = id;
-    var stateKey = draft.state || 'CA';
-    openMap(stateKey);
-    loadGeometry().then(function() {
-      var assignments = draft.assignments || {};
-      markAllBordersDirty();
-      for (var i = 0; i < shapes.length; i++) {
-        var s = shapes[i];
-        var key = s.county + '|' + s.precinct;
-        s.districtId = Object.prototype.hasOwnProperty.call(assignments, key) ? assignments[key] : null;
-      }
-      activeDistrictId = null;
-      editingDistrictId = null;
-      districtCount = Math.max(0, Math.min(1000, draft.count | 0));
-      districtCountInput.value = districtCount;
-      districtColorMode = draft.mode === 'by-lean' ? 'by-lean' : 'by-district';
-      districtModeByDistrictBtn.classList.toggle('active', districtColorMode === 'by-district');
-      districtModeByLeanBtn.classList.toggle('active', districtColorMode === 'by-lean');
-      districtNames = draft.names || {};
-      districtLocked = draft.locked || {};
-      mapNameInput.value = draft.name || '';
-      hasUnsavedChanges = !!draft.dirty;
-      recomputeDistricts();
-    });
+    try { var draft = JSON.parse(raw); applySavedPayload(draft.name || '', { ...draft, id: parseInt(m[1], 10) }, { draft: true }); }
+    catch (error) { editor.notice('Could not restore the draft: ' + error.message, true); }
   }
 
   var statsPage = document.getElementById('stats-page');
@@ -5190,15 +5179,8 @@ html, body {
     return loadGeometry().then(function() { return fetchRaceRecords(race); }).then(function(records) {
       var acc = {};
       for (var k = 1; k <= districtCount; k++) acc[k] = { k: k, dem: 0, rep: 0, other: 0, margin: null };
-      for (var i = 0; i < records.length; i++) {
-        var r = records[i], s = shapesIndex[r.county + '|' + r.precinct];
-        if (!s || s.districtId === null) continue;
-        var a = acc[s.districtId];
-        if (!a) continue;
-        a.dem += r.dem;
-        a.rep += r.rep;
-        a.other += r.other;
-      }
+      var totals = editor.districtVotes(records, race);
+      Object.keys(totals).forEach(function(k) { if (acc[k]) { acc[k].dem = totals[k][0]; acc[k].rep = totals[k][1]; acc[k].other = totals[k][2]; } });
       var rows = [];
       for (var d = 1; d <= districtCount; d++) {
         var row = acc[d], two = row.dem + row.rep;
@@ -5322,10 +5304,10 @@ html, body {
   var accountResend = document.getElementById('account-resend');
 
   function readSynced() {
-    try { return JSON.parse(localStorage.getItem(SYNCED_KEY)) || []; } catch (err) { return []; }
+    try { return JSON.parse(mapStorage.getItem(SYNCED_KEY)) || []; } catch (err) { return []; }
   }
   function writeSynced(list) {
-    try { localStorage.setItem(SYNCED_KEY, JSON.stringify(list)); } catch (err) {}
+    try { mapStorage.setItem(SYNCED_KEY, JSON.stringify(list)); } catch (err) {}
   }
 
   function cloudFetch(path, opts) {
@@ -5441,10 +5423,10 @@ html, body {
 
   function clearLocalMaps() {
     try {
-      localStorage.removeItem(DISTRICTS_STORAGE_KEY);
-      localStorage.removeItem(SYNCED_KEY);
-      Object.keys(localStorage).forEach(function(k) {
-        if (k.indexOf('civitas-draft-') === 0) localStorage.removeItem(k);
+      mapStorage.removeItem(DISTRICTS_STORAGE_KEY);
+      mapStorage.removeItem(SYNCED_KEY);
+      mapStorage.keys().forEach(function(k) {
+        if (k.indexOf('civitas-draft-') === 0) mapStorage.removeItem(k);
       });
     } catch (err) {}
     renderHomeSavedList();
@@ -5598,7 +5580,8 @@ html, body {
     delete copy.sid;     // ids and timestamps belong to this computer / the website, not to the file
     delete copy.id;
     delete copy.updated;
-    var doc = { format: 'civitas-map', version: 1, name: name, payload: copy };
+    delete copy.history;
+    var doc = { format: 'civitas-map', version: 2, name: name, payload: copy };
     var blob = new Blob([JSON.stringify(doc)], { type: 'application/json' });
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
@@ -5612,14 +5595,16 @@ html, body {
 
   function importMapFile(file) {
     var reader = new FileReader();
-    reader.onload = function() {
+    reader.onload = async function() {
       var doc;
       try { doc = JSON.parse(reader.result); } catch (err) { doc = null; }
       if (!doc || doc.format !== 'civitas-map' || !doc.payload || typeof doc.payload !== 'object') {
         alert('That file is not a Civitas map file.');
         return;
       }
+      if (![1, 2].includes(doc.version)) { alert('Unsupported Civitas map file version.'); return; }
       var p = doc.payload;
+      delete p.history;
       var asObj = function(x) { return x && typeof x === 'object' && !Array.isArray(x) ? x : {}; };
       p.assignments = asObj(p.assignments);
       p.names = asObj(p.names);
@@ -5630,10 +5615,10 @@ html, body {
       for (var n = 2; all[name]; n++) name = base + ' (' + n + ')';
       p.id = allocateMapId();
       p.updated = Date.now();
-      all[name] = p;
-      try { writeSavedMaps(all); } catch (err) { alert('Could not save the imported map: ' + err.message); return; }
+      if (!await applySavedPayload(name, p, { importing: true })) return;
+      all[name] = { ...p, ...editor.exportState() };
+      try { writeSavedMaps(all); await mapStorage.flush(); } catch (err) { alert('Could not save the imported map: ' + err.message); return; }
       renderHomeSavedList();
-      applySavedPayload(name, p);
     };
     reader.readAsText(file);
   }
@@ -5652,10 +5637,10 @@ html, body {
     });
   }
 
-  document.getElementById('nav-share-map').addEventListener('click', function() {
+  document.getElementById('nav-share-map').addEventListener('click', async function() {
     if (IS_DESKTOP) {
       if (!mapNameInput.value.trim()) { flashNameInputError(); return; }
-      if (!saveCurrentMap()) return;
+      if (!await saveCurrentMap()) return;
       exportMapFile(mapNameInput.value.trim(), readSavedMaps()[mapNameInput.value.trim()]);
       return;
     }
@@ -5707,7 +5692,7 @@ html, body {
       });
       if (!polys.length) return;
       var st = districtStats[k] || zeroStats();
-      var props = { district: k, name: districtLabel(k), units: st.count || 0, population: Math.round(st.pop || 0) };
+      var props = { district: k, name: districtLabel(k), units: st.count || 0, population: Math.round(st.balancePop || 0), population_basis: populationBasis, census_population: st.pop20, california_adjusted_population: st.pop20Adjusted, acs_population: st.pop };
       if (activeRace) {
         props.election = activeRace.year + ' ' + activeRace.label;
         props.dem_votes = Math.round(st.dem || 0);
@@ -5754,6 +5739,36 @@ html, body {
       }
     }).catch(function() {});
   }
+
+  function legacyAssignments() {
+    var result = {};
+    (editor ? editor.parents : shapes).forEach(function(p) { if (p.districtId !== null) result[p.county + '|' + p.precinct] = p.districtId; });
+    return result;
+  }
+  editor = createCivitasController({
+    geography: function() { return currentState ? currentState.key : 'CA'; },
+    dataset: function() { return DATASET_ID; },
+    unit: function() { return geoUnit(false); },
+    readOnly: function() { return mapReadOnly; },
+    paintBy: function() { return paintBy; },
+    race: function() { return activeRace; },
+    shift: function() { return { from: shiftFromKey, to: shiftToKey }; },
+    project: function(lon, lat) { return geoProj.fwd(lon, lat); },
+    parse: parseRings, path: function(s) { return shapePath(s, 0); },
+    contains: function(s,x,y) { ctx.save(); ctx.setTransform(1,0,0,1,0,0); var hit = ctx.isPointInPath(shapePath(s,0),x,y); ctx.restore(); return hit; },
+    fetchCities: function() { return fetchJSON(currentState.dataDir + 'cities.json'); },
+    statKeys: function() { return Array.from(new Set(['pop','pop20','pop20Adjusted','pop10','pop00','totreg','dem','rep','other'].concat(ETH_GROUPS.map(function(l) { return l.key; }), EDU_KEYS, AGE_KEYS, ORIGIN_KEYS, LANG_KEYS, INC_KEYS, POP_MORE_KEYS, SHIFT_KEYS))); },
+    meta: function() { return { count: districtCount, mode: districtColorMode, name: mapNameInput.value, basis: populationBasis, names: districtNames, locked: districtLocked }; },
+    setBasis: function(basis) { populationBasis = basis === 'adjusted' ? 'adjusted' : 'census'; document.getElementById('population-basis').value = populationBasis; },
+    setMeta: function(m) { districtCount = Math.max(0, Math.min(1000,m.count|0)); districtCountInput.value = districtCount; districtColorMode = m.mode === 'by-lean' ? 'by-lean' : 'by-district'; districtNames = m.names; districtLocked = m.locked; mapNameInput.value = m.name; populationBasis = m.basis === 'adjusted' ? 'adjusted' : 'census'; document.getElementById('population-basis').value = populationBasis; districtModeByDistrictBtn.classList.toggle('active',districtColorMode === 'by-district'); districtModeByLeanBtn.classList.toggle('active',districtColorMode === 'by-lean'); if (activeDistrictId > districtCount) activeDistrictId = null; },
+    shapes: function(next) { shapes = next; adjCache = null; mapTotalsCache = null; countyAggCache = {}; markAllBordersDirty(); },
+    changed: function() { hasUnsavedChanges = true; },
+    persist: saveDraft,
+    refresh: recomputeDistricts,
+    redraw: draw,
+    zoom: function(b) { var cx=(b[0]+b[2])/2,cy=(b[1]+b[3])/2,w=Math.max(b[2]-b[0],2)*1.15,h=Math.max(b[3]-b[1],2)*1.15; var aspect=canvas.clientWidth/canvas.clientHeight; if(w/h>aspect)h=w/aspect;else w=h*aspect;view={x:cx-w/2,y:cy-h/2,w:w,h:h};draw(); }
+  });
+  window.CivitasApp = { editor: editor, save: saveCurrentMap, storage: mapStorage, restore: applySavedPayload, worldToScreen: function(x,y) { var r=canvas.getBoundingClientRect(),scale=baseScale*(base.w/view.w);return [r.left+offX+(x-view.x)*scale,r.top+offY+(y-view.y)*scale]; }, getShapes: function() { return shapes; }, getStats: function() { return { districts: districtStats, totals: mapTotals, basis: populationBasis }; } };
 
   renderHomeSavedList();
   restoreFromHash();

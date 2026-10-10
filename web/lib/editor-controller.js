@@ -1,0 +1,237 @@
+(function(root) {
+  'use strict';
+  const {History,aggregate,SpatialIndex,copy}=root.CivitasEditor;
+  root.createCivitasController=function(bridge) {
+    const worker=new Worker('lib/block-worker.js'),pending=new Map();let serial=0;
+    worker.onmessage=({data})=>{const p=pending.get(data.id);if(!p)return;pending.delete(data.id);data.error?p.reject(new Error(data.error)):p.resolve(data);};
+    worker.onerror=()=>{for(const p of pending.values())p.reject(new Error('The geometry worker stopped. Reload the map to continue.'));pending.clear();};
+    const request=data=>new Promise((resolve,reject)=>{const id=++serial;pending.set(id,{resolve,reject});worker.postMessage({...data,id});});
+    let parents=[],index={},cities=[],cityIndex=null,shapeIndex=null,citiesReady=Promise.resolve();
+    let opened=null,hoverCity=null,pointer=[0,0],history=new History(),before=null,label='',generation=0,busy=false;
+    let statKeys=[],merged=new Map(),merging=new Set(),viewToken=0;
+    const status=document.getElementById('editor-status'),done=document.getElementById('block-done');
+    let statusTimer=null;
+    function notice(text,error=false,lasting=false) {
+      clearTimeout(statusTimer);status.textContent=text;status.classList.toggle('error',error);status.hidden=false;
+      if(!lasting)statusTimer=setTimeout(()=>{status.hidden=true;},error?10000:5000);
+    }
+    function bbox(rings) {
+      const b=[Infinity,Infinity,-Infinity,-Infinity];
+      for(const ring of rings)for(const p of ring){b[0]=Math.min(b[0],p[0]);b[1]=Math.min(b[1],p[1]);b[2]=Math.max(b[2],p[0]);b[3]=Math.max(b[3],p[1]);}
+      return b;
+    }
+    function geometry(polygons) {
+      const projected=polygons.map(poly=>poly.map(ring=>ring.map(p=>bridge.project(p[0],p[1]))));
+      return {polygons:projected,rings:projected.flat()};
+    }
+    function updates() {
+      document.getElementById('population-basis').disabled=busy||bridge.readOnly();
+      document.getElementById('editor-undo').disabled=busy||bridge.readOnly()||!history.canUndo;
+      document.getElementById('editor-redo').disabled=busy||bridge.readOnly()||!history.canRedo;
+      document.getElementById('editor-undo').title=history.canUndo?'Undo '+history.commands[history.cursor-1].label:'Undo';
+      document.getElementById('editor-redo').title=history.canRedo?'Redo '+history.commands[history.cursor].label:'Redo';
+      done.hidden=!opened;done.textContent=opened?'Done · '+opened.precinct:'Done';
+    }
+    function snapshot() {
+      const assignments={};
+      for(const p of parents) {
+        const overrides={};
+        if(p._children)for(const a of p._children)if(a.districtId!==p.districtId)overrides[a.id]=a.districtId;
+        if(p.districtId!==null||Object.keys(overrides).length)assignments[p._id]={district:p.districtId,overrides};
+      }
+      const meta=bridge.meta();
+      return {assignments,meta:{count:meta.count,mode:meta.mode,name:meta.name,basis:meta.basis},names:copy(meta.names),locked:copy(meta.locked)};
+    }
+    function begin(text) {if(!before&&!busy&&!bridge.readOnly()){before=snapshot();label=text;}}
+    function finish() {
+      if(!before)return false;
+      const start=before;before=null;
+      const changed=history.record(label,start,snapshot());
+      if(changed){bridge.changed();bridge.persist();}updates();return changed;
+    }
+    async function ensure(ids) {
+      const token=generation,batches=new Map();
+      for(const id of ids) {
+        const p=index[id];if(!p)throw new Error('This map refers to an unknown '+bridge.unit()+': '+id);
+        if(p._children)continue;
+        if(!p.atomFile)throw new Error('Block data is unavailable for '+p.precinct);
+        if(!batches.has(p.atomFile))batches.set(p.atomFile,[]);batches.get(p.atomFile).push(id);
+      }
+      // Bound concurrent requests and memory use for municipalities crossing counties.
+      for(const [file,keys] of batches) {
+        const data=await request({url:new URL(file,location.href).href,parents:keys,geography:bridge.geography()});
+        if(token!==generation)throw new Error('The map changed while loading blocks.');
+        statKeys=[...new Set([...data.statKeys,'dem','rep','other','shAd','shAr','shAo','shBd','shBr','shBo'])];
+        for(const [id,records] of Object.entries(data.parents)) {
+          const parent=index[id];
+          if(parent._children)continue;
+          parent._children=records.map(rec=>{
+            const g=geometry(rec.polygons),values={};
+            data.statKeys.forEach((key,i)=>{values[key]=rec.stats[i];});
+            return {...values,id:rec.id,blockId:rec.block,cityId:rec.city,_votes:rec.votes,_parent:parent,_polygons:g.polygons,rings:g.rings,paths:[null,null,null],bbox:bbox(g.rings),districtId:parent.districtId,estimated:rec.estimated,county:parent.county,precinct:'Block '+rec.block.slice(-4),fill:'#e3e5e9'};
+          });
+          for(const a of parent._children){a.bboxArea=(a.bbox[2]-a.bbox[0])*(a.bbox[3]-a.bbox[1]);a._atoms=[a];}
+        }
+      }
+    }
+    function syncValues(a) {
+      const race=bridge.race();const votes=a._votes[race?.key]||[0,0,0];[a.dem,a.rep,a.other]=votes;
+      const shift=bridge.shift();const va=a._votes[shift.from]||[0,0,0],vb=a._votes[shift.to]||[0,0,0];
+      [a.shAd,a.shAr,a.shAo]=va;[a.shBd,a.shBr,a.shBo]=vb;
+      a.margin=a.dem+a.rep?(a.dem-a.rep)/(a.dem+a.rep):null;
+      a.inc_med=a.inc_medhh?a.inc_medw/a.inc_medhh:0;a.age_avg=a.age_total?a.age_sum/a.age_total:0;
+    }
+    function groupShape(p,atoms,key,blockId) {
+      if(atoms.length===1&&opened===p)return atoms[0];
+      const values=aggregate(atoms,statKeys),rings=atoms.flatMap(a=>a.rings),signature=atoms.map(a=>a.id).join(',');
+      const cached=merged.get(signature);
+      const g={...values,county:p.county,precinct:blockId?'Block '+blockId.slice(-4):p.precinct+' · '+(key==='null'?'unassigned':'District '+key),districtId:atoms[0].districtId,rings:cached?cached.flat():rings,paths:[null,null,null],_parent:p,_atoms:atoms,_signature:signature,blockId,estimated:atoms.some(a=>a.estimated),fill:'#e3e5e9'};
+      g.bbox=bbox(g.rings);g.bboxArea=(g.bbox[2]-g.bbox[0])*(g.bbox[3]-g.bbox[1]);
+      if(!cached&&!merging.has(signature)) {
+        merging.add(signature);const token=generation;
+        request({operation:'union',groups:{shape:atoms.map(a=>a._polygons)}}).then(data=>{
+          merging.delete(signature);if(token!==generation)return;
+          merged.set(signature,data.groups.shape);if(merged.size>512)merged.delete(merged.keys().next().value);
+          // Ring replacement is presentation only; never add it to history or change totals.
+          if(g._signature===signature){g.rings=data.groups.shape.flat();g.paths=[null,null,null];bridge.redraw();}
+        }).catch(error=>{merging.delete(signature);notice(error.message,true);});
+      }
+      return g;
+    }
+    function sync() {
+      const visible=[];
+      for(const p of parents) {
+        if(!p._children||!p._children.length){visible.push(p);continue;}
+        const groups=new Map();
+        for(const a of p._children) {
+          syncValues(a);
+          const key=opened===p?a.blockId+'|'+a.districtId:String(a.districtId);
+          if(!groups.has(key))groups.set(key,[]);groups.get(key).push(a);
+        }
+        if(opened!==p&&groups.size===1) {
+          p.districtId=p._children[0].districtId;visible.push(p);
+        }else for(const [key,atoms] of groups)visible.push(groupShape(p,atoms,String(atoms[0].districtId),opened===p?atoms[0].blockId:null));
+      }
+      shapeIndex=new SpatialIndex(visible);bridge.shapes(visible);viewToken++;updates();
+    }
+    function closeBlocks() {if(!opened)return;opened=null;sync();bridge.refresh();}
+    async function openBlocks(p) {
+      if(busy)return;
+      busy=true;updates();notice('Loading blocks…',false,true);
+      try {
+        await ensure([p._id]);opened=p;sync();bridge.zoom(p.bbox);bridge.refresh();
+        notice('Paint individual blocks. Done closes block detail.');
+      }catch(error){notice(error.message,true);}finally{busy=false;updates();}
+    }
+    function assignAtoms(atoms,district,locks) {
+      const changed=[];
+      for(const a of atoms){if(a.districtId!==null&&locks[a.districtId])continue;if(a.districtId===district)continue;a.districtId=district;changed.push(a);}
+      return changed;
+    }
+    async function paintCity(city,tool,district,locks) {
+      if(busy||bridge.readOnly())return;
+      busy=true;updates();notice('Loading '+city.name+'…',false,true);
+      try {
+        await ensure(city.parents);
+        busy=false;begin((tool==='eraser'?'Erase ':'Paint ')+city.name);busy=true;
+        const atoms=city.parents.flatMap(id=>index[id]._children).filter(a=>a.cityId===city.id);
+        const skipped=atoms.filter(a=>a.districtId!==null&&locks[a.districtId]&&a.districtId!==(tool==='eraser'?null:district)).length;
+        const changed=assignAtoms(atoms,tool==='eraser'?null:district,locks);
+        opened=null;sync();finish();bridge.refresh();
+        notice(city.name+': '+(changed.length?'updated':'no changes')+(skipped?' · some pieces belong to locked districts':''));
+      }catch(error){before=null;notice(error.message,true);}finally{busy=false;updates();}
+    }
+    function apply(s,tool,paintBy,district,locks) {
+      if(busy||bridge.readOnly())return [];
+      if(paintBy==='city') {
+        if(!hoverCity){notice('Choose an incorporated city. This area is unincorporated.');return [];}
+        paintCity(hoverCity,tool,district,locks);return [];
+      }
+      const p=s._parent||s;
+      if(paintBy==='block'&&opened!==p){openBlocks(p);return [];}
+      begin((tool==='eraser'?'Erase':'Paint')+(paintBy==='county'?' county':' stroke'));
+      const target=tool==='eraser'?null:district,changed=[];
+      const targets=paintBy==='county'?parents.filter(x=>x.county===p.county):[s];
+      for(const x of targets) {
+        if(x._atoms)changed.push(...assignAtoms(x._atoms,target,locks));
+        else if(x._children)changed.push(...assignAtoms(x._children,target,locks));
+        else if((x.districtId===null||!locks[x.districtId])&&x.districtId!==target){x.districtId=target;changed.push(x);}
+      }
+      return changed;
+    }
+    async function applySnapshot(state) {
+      if(!Number.isInteger(state.meta.count)||state.meta.count<0||state.meta.count>1000)throw new Error('Invalid district count');
+      if(!['census','adjusted'].includes(state.meta.basis))throw new Error('Invalid population basis');
+      for(const id of Object.keys(state.assignments))if(!index[id])throw new Error('Unknown map unit: '+id);
+      await ensure(Object.entries(state.assignments).filter(([,v])=>Object.keys(v.overrides||{}).length).map(([id])=>id));
+      // Validate the entire state before mutating any assignment.
+      for(const p of parents) {
+        const saved=state.assignments[p._id]||{district:null,overrides:{}};
+        const district=saved.district??null;
+        if(district!==null&&(!Number.isInteger(district)||district<1||district>state.meta.count))throw new Error('Invalid district assignment');
+        const overrides=saved.overrides||{};
+        if(p._children) {
+          const valid=new Set(p._children.map(a=>a.id));
+          for(const [id,value] of Object.entries(overrides)) {
+            if(!valid.has(id))throw new Error('Unknown block assignment: '+id);
+            if(value!==null&&(!Number.isInteger(value)||value<1||value>state.meta.count))throw new Error('Invalid block district assignment');
+          }
+        }
+      }
+      for(const p of parents) {
+        const saved=state.assignments[p._id]||{district:null,overrides:{}};
+        p.districtId=saved.district??null;
+        if(p._children)for(const a of p._children)a.districtId=Object.hasOwn(saved.overrides||{},a.id)?saved.overrides[a.id]:p.districtId;
+      }
+      bridge.setMeta({...state.meta,names:copy(state.names),locked:copy(state.locked)});sync();bridge.refresh();
+    }
+    async function undoRedo(direction) {
+      if(busy||bridge.readOnly())return;
+      finish();const oldCursor=history.cursor;
+      const next=direction==='undo'?history.undo(snapshot()):history.redo(snapshot());if(!next)return;
+      busy=true;updates();
+      try{await applySnapshot(next);bridge.changed();bridge.persist();notice(direction==='undo'?'Undone':'Redone');}
+      catch(error){history.cursor=oldCursor;notice(error.message,true);}finally{busy=false;updates();}
+    }
+    async function restore(payload,name) {
+      if(payload.dataset&&payload.dataset!==bridge.dataset())throw new Error('This map uses an unavailable dataset.');
+      const assignments=payload.unitAssignments||Object.fromEntries(Object.entries(payload.assignments||{}).map(([id,district])=>[id,{district,overrides:{}}]));
+      for(const id of Object.keys(assignments))if(!index[id])throw new Error('Map geography could not be matched: '+id);
+      const state={assignments,meta:{count:payload.count,mode:payload.mode||'by-district',name,basis:payload.populationBasis||'census'},names:payload.names||{},locked:payload.locked||{}};
+      opened=null;before=null;history=new History(payload.history);await applySnapshot(state);updates();
+      if(!payload.dataset)notice('Map upgraded: district totals now use 2020 Census blocks. An original recovery copy is retained.');
+    }
+    const api={
+      initialize(records){generation++;parents=records.slice();index=Object.fromEntries(parents.map(p=>[p._id,p]));statKeys=bridge.statKeys();opened=null;cities=[];cityIndex=null;hoverCity=null;merged.clear();merging.clear();before=null;history=new History();sync();
+        const token=generation;citiesReady=bridge.fetchCities().then(doc=>{if(token!==generation)return;cities=doc.records.map(c=>({...c,rings:bridge.parse(c.d),paths:[null,null,null]}));cityIndex=new SpatialIndex(cities);bridge.redraw();});citiesReady.catch(error=>notice('City boundaries could not load: '+error.message,true));},
+      resetMap(){opened=null;before=null;history=new History();for(const p of parents){p.districtId=null;if(p._children)for(const a of p._children)a.districtId=null;}bridge.setBasis('census');sync();},
+      apply,sync,begin,finish,closeBlocks,snapshot,restore,notice,undoRedo,openBlocks,paintCity,
+      pickCandidates:(x,y)=>shapeIndex?shapeIndex.at(x,y):null,
+      pointer(x,y){pointer=[x,y];const previous=hoverCity;hoverCity=null;if(cityIndex)for(const c of cityIndex.at(x,y)){if(bridge.contains(c,x,y)){hoverCity=c;break;}}if(previous!==hoverCity&&bridge.paintBy()==='city')bridge.redraw();},
+      overlay(ctx,scale){if(bridge.paintBy()==='city'||document.getElementById('show-city-borders').checked){ctx.strokeStyle='#24cbd1';ctx.lineWidth=1.2/scale;for(const c of cities){if(hoverCity===c&&bridge.paintBy()==='city'){ctx.fillStyle='rgba(36,203,209,.14)';ctx.fill(bridge.path(c));ctx.lineWidth=2.5/scale;}ctx.stroke(bridge.path(c));ctx.lineWidth=1.2/scale;}}if(opened){ctx.strokeStyle='#24cbd1';ctx.lineWidth=2.5/scale;ctx.stroke(bridge.path(opened));}},
+      endStroke(){sync();finish();},
+      metadataChanged(text,fn){if(busy||bridge.readOnly()){updates();return;}begin(text);fn();sync();finish();bridge.refresh();},
+      reduceCount(n){for(const p of parents){if(p.districtId>n)p.districtId=null;if(p._children)for(const a of p._children)if(a.districtId>n)a.districtId=null;}},
+      exportState(){const state=snapshot();return {version:2,dataset:bridge.dataset(),populationBasis:state.meta.basis,unitAssignments:state.assignments,history:history.persistent()};},
+      districtVotes(records,race){const result={};for(const r of records){const p=index[r.county+'|'+r.precinct];if(!p)continue;
+        const pieces=p._children||[p];for(const a of pieces){if(a.districtId===null)continue;const votes=p._children?(a._votes[race.key]||[0,0,0]):[r.dem,r.rep,r.other];const v=result[a.districtId]||(result[a.districtId]=[0,0,0]);for(let i=0;i<3;i++)v[i]+=votes[i];}}
+        return result;},
+      get parents(){return parents;},get busy(){return busy;},get opened(){return opened;},get history(){return history;},get cities(){return cities;},get ready(){return citiesReady;}
+    };
+    done.addEventListener('click',closeBlocks);
+    document.getElementById('editor-undo').addEventListener('click',()=>undoRedo('undo'));
+    document.getElementById('editor-redo').addEventListener('click',()=>undoRedo('redo'));
+    document.getElementById('show-city-borders').addEventListener('change',bridge.redraw);
+    document.getElementById('population-basis').addEventListener('change',event=>api.metadataChanged('Population basis',()=>bridge.setBasis(event.target.value)));
+    root.addEventListener('civitas-history',event=>undoRedo(event.detail));
+    root.addEventListener('civitas-storage-error',event=>notice('Could not save this map: '+event.detail,true,true));
+    document.addEventListener('keydown',event=>{
+      if(event.target.closest('input,textarea,[contenteditable="true"]'))return;
+      if(event.key==='Escape'&&opened){closeBlocks();return;}
+      if(!(event.metaKey||event.ctrlKey))return;
+      if(event.key.toLowerCase()==='z'){event.preventDefault();undoRedo(event.shiftKey?'redo':'undo');}
+      else if(event.ctrlKey&&event.key.toLowerCase()==='y'){event.preventDefault();undoRedo('redo');}
+    });
+    updates();return api;
+  };
+})(globalThis);

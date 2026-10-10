@@ -29,28 +29,39 @@
         values.set('civitas-idb-migrated','1');
       }
       let queue=Promise.resolve(),failure=null;
-      const enqueue=(key,value,store='records')=>{
-        queue=queue.then(()=>new Promise((resolve,reject)=>{
-          const tx=db.transaction(store,'readwrite');
-          if(value===undefined)tx.objectStore(store).delete(key);else tx.objectStore(store).put(value,key);
-          tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);
-        })).catch(error=>{failure=error;root.dispatchEvent(new CustomEvent('civitas-storage-error',{detail:error.message}));});
+      const transact=(entries,store='records')=>new Promise((resolve,reject)=>{
+        let tx;
+        try {
+          tx=db.transaction(store,'readwrite');
+          for(const [key,value] of entries) {
+            if(value===undefined||value===null)tx.objectStore(store).delete(key);
+            else tx.objectStore(store).put(value,key);
+          }
+          tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error||new Error('Storage transaction aborted'));
+        } catch(error){if(tx)tx.abort();reject(error);}
+      });
+      const report=error=>{failure=error;root.dispatchEvent(new CustomEvent('civitas-storage-error',{detail:error.message}));};
+      const enqueue=(key,value,store='records',previous)=>{
+        queue=queue.then(()=>transact([[key,value]],store)).catch(error=>{
+          if(store==='records'&&values.get(key)===value){if(previous===undefined)values.delete(key);else values.set(key,previous);}
+          report(error);
+        });
       };
       return {
         getItem:k=>values.get(k)??null,
-        setItem(k,v){values.set(k,String(v));enqueue(k,String(v));},
-        removeItem(k){values.delete(k);enqueue(k,undefined);},
+        setItem(k,v){const previous=values.get(k);values.set(k,String(v));enqueue(k,String(v),'records',previous);},
+        removeItem(k){const previous=values.get(k);values.delete(k);enqueue(k,undefined,'records',previous);},
         keys:()=>[...values.keys()],
         backup(k,v){enqueue(k,v,'backups');},
         async flush(){await queue;if(failure){const e=failure;failure=null;throw e;}},
         async batch(entries){
-          await queue;
-          await new Promise((resolve,reject)=>{
-            const tx=db.transaction('records','readwrite');
-            for(const [k,v] of entries) {if(v===null)tx.objectStore('records').delete(k);else tx.objectStore('records').put(String(v),k);}
-            tx.oncomplete=resolve;tx.onabort=()=>reject(tx.error);
+          const operation=queue.then(async()=>{
+            if(failure){const error=failure;failure=null;throw error;}
+            await transact(entries);
+            for(const [k,v] of entries){if(v===null)values.delete(k);else values.set(k,String(v));}
           });
-          for(const [k,v] of entries){if(v===null)values.delete(k);else values.set(k,String(v));}
+          queue=operation.catch(report);
+          await operation;
         }
       };
     }

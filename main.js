@@ -111,10 +111,23 @@ function createWindow() {
 }
 
 function buildMenu() {
+  const historyAction = direction => async () => {
+    const window = BrowserWindow.getFocusedWindow();
+    if (!window) return;
+    const editing = await window.webContents.executeJavaScript("!!document.activeElement?.closest('input,textarea,[contenteditable=\"true\"]')");
+    if (editing) window.webContents[direction]();
+    else await window.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('civitas-history', {detail: '${direction}'}))`);
+  };
   const template = [
     ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
     { label: 'File', submenu: [{ role: process.platform === 'darwin' ? 'close' : 'quit' }] },
-    { role: 'editMenu' },
+    { label: 'Edit', submenu: [
+      { label: 'Undo', accelerator: 'CmdOrCtrl+Z', click: historyAction('undo') },
+      { label: 'Redo', accelerator: 'CmdOrCtrl+Shift+Z', click: historyAction('redo') },
+      ...(process.platform === 'win32' ? [{ label: 'Redo', accelerator: 'Ctrl+Y', visible: false, acceleratorWorksWhenHidden: true, click: historyAction('redo') }] : []),
+      { type: 'separator' },
+      { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' },
+    ] },
     {
       label: 'View',
       submenu: [
