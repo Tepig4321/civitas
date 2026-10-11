@@ -2254,8 +2254,10 @@ html, body {
     var bucket=scale>0?Math.pow(2,Math.floor(Math.log2(scale))):null;
     if (s.displayPaths[lod] && s.displayScales[lod] === bucket) return s.displayPaths[lod];
     var path = new Path2D();
-    for (var r=0;r<s.rings.length;r++) {
-      var ring=s.rings[r];
+    // Merged block outlines (displayRings) are presentation only; picking and export use rings.
+    var rings=s.displayRings||s.rings;
+    for (var r=0;r<rings.length;r++) {
+      var ring=rings[r];
       if (!CivitasEditor.displayRing(ring,lod,bucket)) continue;
       addRingToPath(path,lod?decimateRing(ring,LOD_EPS[lod]):ring);
     }
@@ -2429,8 +2431,9 @@ html, body {
     var provisional = geometryFromPolygons(polygons.flat());
     provisional.members=list.slice();provisional.sourceRings=list.map(function(s){return s.rings;});
     if (!editor || polygons.length < 2) return provisional;
-    provisional.pending = editor.unionGeometry(polygons).then(function(result) {
-      if (districtGeomCache[k] !== provisional) return;
+    provisional.pending = editor.unionGeometry(polygons, k).then(function(result) {
+      // A null result was superseded by a newer outline request for this district.
+      if (!result || districtGeomCache[k] !== provisional) return;
       districtGeomCache[k] = Object.assign(geometryFromPolygons(result),{members:provisional.members,sourceRings:provisional.sourceRings});
       anyBordersDirty = true;
       computeDistrictBorders(); draw();
@@ -5870,7 +5873,8 @@ html, body {
     changed: function() { hasUnsavedChanges = true; },
     persist: saveDraft,
     refresh: recomputeDistricts,
-    geometryChanged: function() { markAllBordersDirty(); computeDistrictBorders(); draw(); },
+    // Merged block outlines are display-only, so district outlines (built from exact rings) stay valid.
+    geometryChanged: function() { draw(); },
     redraw: draw,
     zoom: function(b) { var cx=(b[0]+b[2])/2,cy=(b[1]+b[3])/2,w=Math.max(b[2]-b[0],2)*1.15,h=Math.max(b[3]-b[1],2)*1.15; var aspect=canvas.clientWidth/canvas.clientHeight; if(w/h>aspect)h=w/aspect;else w=h*aspect;view={x:cx-w/2,y:cy-h/2,w:w,h:h};draw(); }
   });

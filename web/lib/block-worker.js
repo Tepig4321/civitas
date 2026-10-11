@@ -1,17 +1,29 @@
 /* Decompression, parsing and polygon unions run outside the map's UI thread. */
-importScripts('../vendor/polygon-clipping.umd.js');
-const cache=new Map();
-self.onmessage=async ({data})=>{
+importScripts('../vendor/polygon-clipping.umd.js','geometry-union.js');
+const cache=new Map(),queue=[];let draining=false;
+// Messages are only queued here. Jobs run one at a time from a timer, so newer messages are
+// received between jobs and can supersede queued unions that have not started yet.
+self.onmessage=({data})=>{
+  if(data.supersede)for(const job of queue)if(job.supersede===data.supersede&&!job.cancelled){job.cancelled=true;self.postMessage({id:job.id,cancelled:true});}
+  queue.push(data);if(!draining){draining=true;setTimeout(drain,0);}
+};
+async function drain() {
+  const data=queue.shift();
+  if(data&&!data.cancelled)await run(data);
+  if(queue.length)setTimeout(drain,0);else draining=false;
+}
+async function run(data) {
   try {
     if(data.operation==='union') {
-      const groups={};
+      // A failed group is reported by key; the other groups of a batch still merge.
+      const groups={},grids={},areas={},errors={};
       for(const [key,polygons] of Object.entries(data.groups)) {
-        // Pairwise chunks avoid exceeding JavaScript's argument limit in dense cities.
-        let result=[];
-        for(let i=0;i<polygons.length;i+=100)result=polygonClipping.union(result,...polygons.slice(i,i+100));
-        groups[key]=result;
+        try {
+          const result=CivitasUnion.robustUnion(polygons);
+          groups[key]=result.polygons;grids[key]=result.grid;areas[key]=[result.inputArea,result.outputArea];
+        }catch(error){errors[key]=error.message;}
       }
-      self.postMessage({id:data.id,groups});return;
+      self.postMessage({id:data.id,groups,grids,areas,errors});return;
     }
     let doc=cache.get(data.url);
     if(!doc) {
@@ -35,4 +47,4 @@ self.onmessage=async ({data})=>{
     }
     self.postMessage({id:data.id,parents,statKeys:doc.statKeys});
   }catch(error){self.postMessage({id:data.id,error:error.message});}
-};
+}
