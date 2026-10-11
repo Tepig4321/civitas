@@ -3741,6 +3741,7 @@ html, body {
     var panel = document.getElementById('district-sidebar');
     var rows = districtList.children;
     var widest = 0;
+    var range = document.createRange();
     for (var i = 0; i < rows.length; i++) {
       var row = rows[i];
       var rs = getComputedStyle(row);
@@ -3749,7 +3750,15 @@ html, body {
       for (var c = 0; c < row.children.length; c++) {
         var ch = row.children[c];
         var cs = getComputedStyle(ch);
-        var natural = ch.classList.contains('district-name') ? ch.scrollWidth : (ch.tagName === 'INPUT' ? Math.max(ch.offsetWidth, 150) : ch.offsetWidth);
+        var natural = 0;
+        if (ch.classList.contains('district-name')) {
+          range.selectNodeContents(ch);
+          natural = range.getBoundingClientRect().width;
+        } else if (ch.tagName === 'INPUT') {
+          natural = 150;
+        } else {
+          natural = ch.offsetWidth;
+        }
         w += natural + (parseFloat(cs.marginLeft) || 0) + (parseFloat(cs.marginRight) || 0);
       }
       w += gap * Math.max(0, row.children.length - 1);

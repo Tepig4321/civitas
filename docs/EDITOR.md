@@ -24,6 +24,7 @@ IndexedDB `civitas-editor` is authoritative. Saves commit the catalogue entry an
 - `npm run test:smoke`: isolated Electron profile; menus, both map types, save/reopen and Mac lifecycle.
 - `npm run test:editor`: actual worker, Canvas and IndexedDB; offline editing, splits, native history, deletion, storage failure and restore.
 - `npm run test:pointer`: actual canvas clicks to paint a parent, open blocks without a district selection, paint a block into another district and undo; deep zoom preserves its cursor anchor and aspect ratio, in both map types.
+- `npm run test:sidebar`: actual sidebar layout remains stable across repeated refreshes, expands for long names and respects collapsed state.
 - `.venv/bin/python -m unittest discover -s tests -p 'test_*.py'`: geometric enclaves, crossing boundaries and conservation.
 - `npm run data:validate`: every county, both geographies, all audited races, block counts and legacy IDs; parent outlines must match the union of their serialized atoms, including holes and winding.
 - `npm run data:repair:geometry`: upgrade existing generated geometry without reallocating counts; resumes completed counties and keeps originals in `.cache/geometry-before-repair/`. Run the full data audit again before packaging.
