@@ -1,0 +1,78 @@
+{
+  "name": "electioncord-civitas",
+  "productName": "ElectionCord Civitas",
+  "version": "1.1.0",
+  "description": "ElectionCord's Civitas: redistricting and election analysis, as a desktop app.",
+  "author": "ElectionCord",
+  "main": "main.js",
+  "dependencies": {
+    "polygon-clipping": "0.15.7"
+  },
+  "private": true,
+  "scripts": {
+    "postinstall": "install-electron",
+    "start": "electron .",
+    "dist:mac": "electron-builder --mac --arm64 --x64 --publish never",
+    "dist:mac:arm64": "electron-builder --mac --arm64 --publish never",
+    "dist:mac:x64": "electron-builder --mac --x64 --publish never",
+    "test:smoke": "node scripts/smoke-test.cjs",
+    "test": "node scripts/unit-tests.cjs",
+    "test:editor": "node scripts/editor-smoke.cjs",
+    "test:pointer": "node scripts/pointer-smoke.cjs",
+    "test:sidebar": "node scripts/sidebar-smoke.cjs",
+    "test:security": "node scripts/security-audit.cjs",
+    "data:fetch": "node scripts/python.cjs scripts/fetch-geodata.py",
+    "data:build": "node scripts/python.cjs scripts/build-block-data.py --resume",
+    "data:repair:geometry": "node scripts/python.cjs scripts/repair-block-geometry.py --resume",
+    "data:validate": "node scripts/data.cjs validate",
+    "dist:win": "electron-builder --win --x64 --publish never",
+    "setup": "node scripts/setup.cjs",
+    "check": "node scripts/check.cjs",
+    "test:geometry": "node scripts/python.cjs -m unittest discover -s tests -p test_*.py",
+    "data:validate:completed": "node scripts/python.cjs scripts/validate-block-data.py --completed",
+    "data:validate:fixture": "node scripts/python.cjs scripts/validate-block-data.py --fixture --root tests/fixtures/block-v1",
+    "data:check": "node scripts/data.cjs check",
+    "test:fixture:refresh": "node scripts/python.cjs scripts/refresh-test-fixture.py",
+    "release:checksums": "node scripts/release-checksums.cjs",
+    "benchmark:render": "node scripts/render-benchmark.cjs",
+    "benchmark:city": "node scripts/city-benchmark.cjs"
+  },
+  "devDependencies": {
+    "electron": "43.7.9",
+    "electron-builder": "26.15.3",
+    "playwright": "1.61.1"
+  },
+  "build": {
+    "appId": "com.electioncord.civitas",
+    "productName": "ElectionCord Civitas",
+    "asar": true,
+    "files": [
+      "main.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "web",
+        "to": "web",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.education",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "identity": "-",
+      "notarize": false
+    },
+    "artifactName": "ElectionCord-Civitas-${version}-${arch}-${os}.${ext}",
+    "win": {
+      "target": "zip",
+      "signAndEditExecutable": false
+    },
+    "beforePack": "./scripts/before-pack.cjs"
+  }
+}
