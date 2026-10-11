@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Repair existing generated geometry without reallocating counts or changing atom IDs."""
-import argparse,gzip,hashlib,importlib.util,json,shutil
+import argparse,gzip,hashlib,importlib.util,json,shutil,time
 from concurrent.futures import ThreadPoolExecutor,as_completed
 from pathlib import Path
 import pyogrio.raw
@@ -12,9 +12,16 @@ spec=importlib.util.spec_from_file_location('builder',ROOT/'scripts/build-block-
 b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)
 
 def numeric_digest(atoms):
- return hashlib.sha256(json.dumps([{k:v for k,v in atom.items() if k!='polygons'} for atom in atoms],sort_keys=True,separators=(',',':')).encode()).hexdigest()
+ # Keep the exact original canonical JSON hash without materializing another
+ # county-sized list, string and byte buffer during the geometry memory peak.
+ digest=hashlib.sha256();digest.update(b'[')
+ for i,atom in enumerate(atoms):
+  if i:digest.update(b',')
+  digest.update(json.dumps({k:v for k,v in atom.items() if k!='polygons'},sort_keys=True,separators=(',',':')).encode())
+ digest.update(b']');return digest.hexdigest()
 
 def repair(slug,resume=False,snapping_distance=1e-9):
+ started=time.perf_counter()
  report_path=b.OUT/'reports'/f'{slug}.json'
  report=json.loads(report_path.read_text())
  if resume and report.get('geometryRevision')==b.GEOMETRY_REVISION:return
@@ -27,6 +34,7 @@ def repair(slug,resume=False,snapping_distance=1e-9):
  print('Repairing',slug,len(doc['atoms']),'atoms',flush=True)
  geoms,coverage=b.repair_atom_geometry(doc['atoms'],from_wkb(wkb),initial_snapping_distance=snapping_distance)
  if numeric_digest(doc['atoms'])!=before:raise RuntimeError('Geometry repair changed nongeometry data: '+slug)
+ print('Verified shared-edge mesh for',slug,'after',round(time.perf_counter()-started,1),'seconds; rebuilding parent outlines',flush=True)
  summaries={}
  for geo in b.GEO:
   path=b.OUT/geo/'geometry'/f'precincts-{slug}.json'
@@ -37,6 +45,7 @@ def repair(slug,resume=False,snapping_distance=1e-9):
    record['d']=b.paths_ll(footprint,fwd);record['empty']=footprint.is_empty
    if not footprint.is_empty:record['bbox']=list(transform(fwd,footprint).bounds)
   summaries[path]=summary
+  print('Rebuilt',len(records),geo,'outlines for',slug,'after',round(time.perf_counter()-started,1),'seconds',flush=True)
  # Keep the first input version for local diagnosis/recovery. Publish the report last
  # so an interrupted county is retried; the release certificate rejects partial writes.
  backup=ROOT/'.cache/geometry-before-repair'/slug
@@ -49,6 +58,7 @@ def repair(slug,resume=False,snapping_distance=1e-9):
  report.update(geometryRevision=b.GEOMETRY_REVISION,coverage={**coverage,'preservedNongeometrySha256':before})
  b.write_json(report_path,report)
  print('Repaired',slug,'with identical atom IDs, statistics, votes and memberships',flush=True)
+ print('Completed',slug,'in',round(time.perf_counter()-started,1),'seconds',flush=True)
 
 if __name__=='__main__':
  parser=argparse.ArgumentParser();parser.add_argument('--counties',nargs='+');parser.add_argument('--resume',action='store_true');parser.add_argument('--jobs',type=int,choices=range(1,5),default=1)
