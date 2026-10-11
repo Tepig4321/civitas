@@ -34,7 +34,8 @@
     "data:check": "node scripts/data.cjs check",
     "test:fixture:refresh": "node scripts/python.cjs scripts/refresh-test-fixture.py",
     "release:checksums": "node scripts/release-checksums.cjs",
-    "benchmark:render": "node scripts/render-benchmark.cjs"
+    "benchmark:render": "node scripts/render-benchmark.cjs",
+    "benchmark:city": "node scripts/city-benchmark.cjs"
   },
   "devDependencies": {
     "electron": "43.7.9",

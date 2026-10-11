@@ -45,4 +45,8 @@ Final noding may leave microscopic enclosed voids. Only voids wholly covered by 
 
 `npm run benchmark:render -- . label` records the existing dense Los Angeles canvas benchmark with runtime, hardware, dataset hashes, raw samples and process-memory observations in `dist/benchmarks/`. Compare runs on the same machine, viewport and dataset with other heavy jobs stopped. It measures synchronous canvas rendering after initialization with synthetic election colors; it does not measure startup, block decoding, city edits or end-to-end input latency.
 
+`npm run benchmark:city -- current` paints Lancaster and Palmdale in both parent geographies using the generated Los Angeles data. It measures block loading, assignment, parent outline merges and final district outlines, then verifies repaint, undo and redo. Hidden temporary instances keep the user's profile untouched. Source and data hashes describe the copies actually tested; results are saved in `dist/benchmarks/`. The current implementation exits with failure for timeouts, merge errors or a history mismatch.
+
+Use `npm run benchmark:city -- both <baseline-commit>` for comparison on the same data. A stalled baseline is recorded after the idle timeout instead of continuing to repaint; `CITY_BENCHMARK_TIMEOUT_MS` changes the default two-minute timeout. Stop other heavy jobs before comparing timings. These runs complement the fixture checks and require the generated county files.
+
 Renderer module extraction, chunk-format changes, cache budgets and language changes should follow independent profiling and preserve visible behavior. This workflow change does not introduce them.
