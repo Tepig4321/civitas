@@ -135,6 +135,129 @@
       return inside;
     };
   }
+  // Nest flat rings (for example the subpaths of a serialized geometry record) into
+  // [outer, holes...] polygons by containment, largest first. Bounding boxes reject most
+  // candidates, so a multipolygon of thousands of disjoint fragments stays linear in practice.
+  function nestRings(rings) {
+    const polys = [];
+    const prepared = rings.map(ring => {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const [x, y] of ring) { if (x < x0) x0 = x; if (y < y0) y0 = y; if (x > x1) x1 = x; if (y > y1) y1 = y; }
+      return {ring, area: Math.abs(ringArea(ring)), box: [x0, y0, x1, y1]};
+    }).sort((a, b) => b.area - a.area);
+    for (const {ring, box} of prepared) {
+      const [x0, y0, x1, y1] = box, pt = ring[0];
+      let placed = false;
+      for (const poly of polys) {
+        const outer = poly.box;
+        if (pt[0] < outer[0] || pt[0] > outer[2] || pt[1] < outer[1] || pt[1] > outer[3]) continue;
+        if (!pipRing(poly[0], pt)) continue;
+        poly.push(ring); placed = true; break;
+      }
+      if (!placed) polys.push(Object.assign([ring], {box}));
+    }
+    return polys;
+  }
+  function pipRing(ring, [x, y]) {
+    let inside = false;
+    for (let i = 1; i < ring.length; i++) {
+      const [x1, y1] = ring[i - 1], [x2, y2] = ring[i];
+      if ((y1 > y) !== (y2 > y) && x < x1 + (y - y1) * (x2 - x1) / (y2 - y1)) inside = !inside;
+    }
+    return inside;
+  }
+  // A display remainder as (parent outline) minus (merged assigned pieces) instead of a full
+  // union of every remainder atom, which is what makes large remainders slow. The parent
+  // record is only trusted when it verifies: the result must cover an interior point of every
+  // remainder piece (like robustUnion) and must not exceed their total area by more than one
+  // snap displacement per source edge. A record that misses mesh pieces — unmapped-block
+  // debris outside the record outline, block-group outlines drifting from their blocks — has
+  // those pieces added back (pieces clearing the result append; the rest merge in one sweep;
+  // coverage only grows, so only the repaired pieces re-verify). A record that still
+  // disagrees fails a guard, and the function falls back to the exact full union rather than
+  // returning a wrong outline. If that union also fails, the error propagates.
+  function robustDifference(subject, clips, remainder, options = {}) {
+    const timing = options.timing || null;
+    if (timing) { timing.clipMs = 0; timing.diffMs = 0; timing.guardMs = 0; }
+    const errors = [];
+    if (!Array.isArray(subject) || !subject.length || !Array.isArray(clips) || !clips.length)
+      errors.push('difference needs a subject and at least one clip');
+    else for (const grid of options.grids || GRIDS) {
+      try {
+        const t0 = timing && performance.now();
+        const mergedClips = clips.map(clip => robustUnion(clip).polygons);
+        const t1 = timing && performance.now();
+        // snapPolygons keeps the input's geom structure, so wrap each multipolygon as one geom.
+        const collapsed = [], snapOne = (mp, into) => snapPolygons([mp], grid, into)[0] || [];
+        const snappedSubject = snapOne(nestRings(subject), collapsed);
+        const snappedClips = mergedClips.map(clip => snapOne(clip, collapsed));
+        if (!snappedSubject.length || snappedClips.some(clip => !clip.length)) throw new Error('subject or clip collapses on this grid');
+        let polygons = polygonClipping.difference(snappedSubject, ...snappedClips);
+        const t2 = timing && performance.now();
+        let inputArea = 0, perimeter = 0;
+        for (const g of remainder) { inputArea += geomArea(g); perimeter += geomPerimeter(g); }
+        const displacement = grid * Math.SQRT1_2, tolerance = displacement * perimeter;
+        const snappedRemainder = snapPolygons(remainder, grid);
+        // Remainder atoms that snapping collapses entirely (zero-width debris) cannot be lost.
+        if (snappedRemainder.length && !polygons.length) throw new Error('difference is empty');
+        // Mesh pieces the record does not cover are added back rather than dropped. Repair only
+        // unions area into the result, so previously covered probes stay covered and only the
+        // repaired pieces need re-verifying.
+        const boxOf = poly => {
+          let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+          for (const ring of poly) for (const [x, y] of ring) { if (x < x0) x0 = x; if (y < y0) y0 = y; if (x > x1) x1 = x; if (y > y1) y1 = y; }
+          return [x0, y0, x1, y1];
+        };
+        const inside = containment(polygons);
+        const boxes = polygons.map(boxOf);
+        let unchecked = 0, repaired = 0, appended = 0;
+        const uncovered = [];
+        for (const geom of snappedRemainder) for (const poly of geom) {
+          const probe = interiorPoint(poly);
+          if (!probe || probe.clearance <= displacement) { unchecked++; continue; }
+          if (!inside(probe.point)) uncovered.push(poly);
+        }
+        if (uncovered.length) {
+          const near = [];
+          for (const poly of uncovered) {
+            const [x0, y0, x1, y1] = boxOf(poly);
+            if (boxes.some(b => !(x1 < b[0] || x0 > b[2] || y1 < b[1] || y0 > b[3]))) near.push(poly);
+            else { polygons.push(poly); appended++; }
+          }
+          if (near.length) polygons = polygonClipping.union(polygons, ...near);
+          // Even-odd against rings sharing the point's y range; a ring outside it cannot cross
+          // the horizontal ray, so this is the full parity without indexing every edge again.
+          const repairedBoxes = polygons.map(boxOf);
+          const recheck = point => {
+            let hit = false;
+            for (let i = 0; i < polygons.length; i++) {
+              if (point[1] < repairedBoxes[i][1] || point[1] > repairedBoxes[i][3]) continue;
+              for (const ring of polygons[i]) if (pipRing(ring, point)) hit = !hit;
+            }
+            return hit;
+          };
+          let still = 0;
+          for (const poly of uncovered) {
+            const probe = interiorPoint(poly);
+            if (!probe || probe.clearance <= displacement) { unchecked++; continue; }
+            if (!recheck(probe.point)) still++;
+          }
+          if (still) throw new Error(still + ' remainder piece(s) missing after adding record gaps');
+          repaired = uncovered.length;
+        }
+        const outputArea = geomArea(polygons);
+        if (outputArea > inputArea + tolerance) throw new Error('difference area ' + outputArea + ' exceeds remainder area ' + inputArea);
+        const lost = collapsed.filter(c => c.width > QUANTUM).length;
+        if (lost) throw new Error(lost + ' ring(s) wider than ' + QUANTUM + ' collapse on this grid');
+        if (timing) { timing.clipMs += t1 - t0; timing.diffMs += t2 - t1; timing.guardMs += performance.now() - t2; timing.attempts = (timing.attempts || 0) + 1; }
+        return {polygons, grid, inputArea, outputArea, tolerance, droppedRings: collapsed.length,
+          droppedArea: collapsed.reduce((n, c) => n + c.area, 0), unchecked, repaired, appended, attempts: errors, method: 'difference'};
+      } catch (error) { errors.push('grid ' + grid + ': ' + error.message); }
+    }
+    // The parent record does not verify against this mesh: compute the outline exactly.
+    const fallback = robustUnion(remainder, options);
+    return {...fallback, method: 'union', fallbackReason: errors.join('; ')};
+  }
   // Snap and union, trying finer grids first. Throws, never returns partial geometry.
   // Rings narrower than QUANTUM that snapping removes are reported as droppedRings/droppedArea.
   // inputArea and perimeter are measured on the caller's original pieces. The union cannot
@@ -145,14 +268,20 @@
   // thin to hold a point farther than that from their edges are counted as `unchecked`.
   function robustUnion(geoms, options = {}) {
     const errors = [], grids = options.grids || GRIDS;
+    // Optional phase timings for the city benchmark; absent in normal operation.
+    const timing = options.timing || null;
+    if (timing) { timing.snapMs = 0; timing.unionMs = 0; timing.guardMs = 0; timing.attempts = 0; }
     let inputArea = 0, perimeter = 0;
     for (const g of geoms) { inputArea += geomArea(g); perimeter += geomPerimeter(g); }
     for (const grid of grids) {
       try {
+        const t0 = timing && performance.now();
         const collapsed = [], input = snapPolygons(geoms, grid, collapsed);
+        const t1 = timing && performance.now();
         const lost = collapsed.filter(c => c.width > QUANTUM).length;
         if (lost) throw new Error(lost + ' source ring(s) wider than ' + QUANTUM + ' collapse on this grid');
         const resnapped = [], polygons = balancedUnion(input, FAN_IN, grid, resnapped);
+        const t2 = timing && performance.now();
         const resnapLost = resnapped.filter(c => c.width > QUANTUM).length;
         if (resnapLost) throw new Error(resnapLost + ' merged ring(s) wider than ' + QUANTUM + ' collapse when re-snapping a failed step');
         const dropped = collapsed.concat(resnapped);
@@ -167,6 +296,7 @@
           if (!inside(probe.point)) uncovered++;
         }
         if (uncovered) throw new Error(uncovered + ' source polygon(s) missing from the union');
+        if (timing) { timing.snapMs += t1 - t0; timing.unionMs += t2 - t1; timing.guardMs += performance.now() - t2; timing.attempts++; }
         return {polygons, grid, inputArea, outputArea, tolerance, droppedRings: dropped.length, droppedArea: dropped.reduce((n, c) => n + c.area, 0), unchecked, attempts: errors};
       } catch (error) {
         errors.push('grid ' + grid + ': ' + error.message);
@@ -174,5 +304,5 @@
     }
     throw new Error('Could not merge outline (' + errors.join('; ') + ')');
   }
-  return {GRIDS, QUANTUM, snapPolygons, balancedUnion, robustUnion, interiorPoint, geomArea, geomPerimeter, ringArea};
+  return {GRIDS, QUANTUM, snapPolygons, balancedUnion, robustUnion, robustDifference, nestRings, interiorPoint, geomArea, geomPerimeter, ringArea};
 });

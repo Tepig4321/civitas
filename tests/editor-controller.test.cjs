@@ -6,7 +6,7 @@ const core=require('../web/lib/editor-core.js');
 // The mock worker unions by concatenation; options.union may replace its reply.
 function fixture(options={}) {
   let worker,hold=!!options.hold;const unions=[],held=[],geometryChanges=[];
-  const union=options.union||(req=>({id:req.id,groups:Object.fromEntries(Object.entries(req.groups).map(([k,v])=>[k,v.flat()])),errors:{}}));
+  const union=options.union||(req=>({id:req.id,groups:Object.fromEntries(Object.entries(req.groups).map(([k,v])=>[k,(Array.isArray(v)?v:v.polygons).flat()])),errors:{},methods:Object.fromEntries(Object.entries(req.groups).map(([k,v])=>[k,Array.isArray(v)?'union':'difference']))}));
   const controls=new Map(),listeners={};
   const element=id=>{if(!controls.has(id))controls.set(id,{hidden:true,classList:{toggle(){}},addEventListener(type,fn){this[type]=fn;}});return controls.get(id);};
   const statKeys=['pop20','pop20Adjusted','pop','age_total','age_sum','inc_medhh','inc_medw'];
@@ -24,6 +24,12 @@ function fixture(options={}) {
     parentAtoms[id]=[0,1].map(j=>({id:'x'+i+'-'+j,block:String(100000000000000+i*2+j),city:j?null:'town',stats:[1,1,1,1,30,1,10],votes:{},polygons:[[[[j,y],[j+1,y],[j+1,y+1],[j,y+1],[j,y]]]]}));
   }
   if(options.huge)parentAtoms['County|1'][0]={...atoms[0],polygons:[[Array.from({length:150002},(_,i)=>i===150001?[0,0]:[Math.cos(i/150001*2*Math.PI),Math.sin(i/150001*2*Math.PI)])]]};
+  // options.record gives the first parent a geometry record and its unassigned atom more
+  // vertices than the city atom, so a city paint leaves it the dominant group.
+  if(options.record) {
+    parents[0].rings=[[[0,0],[2,0],[2,1],[0,1],[0,0]]];
+    parentAtoms['County|1'][1]={...atoms[1],polygons:[[[[1,0],[2,0],[2,1],[1,1],[1,0.8],[1,0.6],[1,0.4],[1,0.2],[1,0]]]]};
+  }
   let meta={count:2,mode:'by-district',name:'Test',basis:'census',names:{},locked:{}},visible=[],persisted=0;
   const sandbox={CivitasEditor:core,document:{getElementById:element,addEventListener(){}},location:{href:'https://fixture/'},URL,setTimeout,clearTimeout,console,addEventListener(type,fn){listeners[type]=fn;},Worker:class{constructor(){worker=this;}postMessage(req){
     if(req.operation==='union'){unions.push(req);const reply=()=>this.onmessage({data:union(req)});hold?held.push(reply):queueMicrotask(reply);return;}
@@ -169,6 +175,20 @@ test('very large groups receive a complete merge and are not repeatedly queued',
   assert.ok(f.unions.some(u=>Object.hasOwn(u.groups,'a')));
   const big=f.visible.find(s=>s._signature==='a');assert.ok(big.displayRings);
   const requests=f.unions.length;e.sync();await tick();assert.equal(f.unions.length,requests,'a merged group is not re-queued on every sync');
+});
+test('the dominant group of a parent record merges as a parent-minus-rest difference',async()=>{
+  const f=fixture({record:true}),e=f.editor;await paintTown(f);await e.mergesSettled();
+  const message=f.unions.find(u=>u.groups.b&&u.groups.b.difference);
+  assert.ok(message,'the dominant remainder carries a difference spec');
+  // Sandbox-created arrays do not deep-compare against outer literals, so compare by identity.
+  assert.equal(message.groups.b.polygons.length,1);
+  assert.equal(message.groups.b.polygons[0],f.parents[0]._children[1]._polygons);
+  assert.equal(message.groups.b.difference.subject,f.parents[0].rings);
+  assert.equal(message.groups.b.difference.clips.length,1);
+  assert.equal(message.groups.b.difference.clips[0][0],f.parents[0]._children[0]._polygons);
+  assert.equal(Array.isArray(f.unions.find(u=>u.groups.a).groups.a),true,'the smaller group stays a plain union');
+  assert.equal(e.unionStats.differenced,1);assert.equal(e.unionStats.fallbacks,0);
+  assert.ok(f.visible.find(s=>s._signature==='b').displayRings);
 });
 test('district outline requests carry a supersession key and cancelled replies resolve null',async()=>{
   const f=fixture({union:req=>req.supersede==='district:1'?{id:req.id,cancelled:true}:{id:req.id,groups:{shape:req.groups.shape.flat()},errors:{}}}),e=f.editor;

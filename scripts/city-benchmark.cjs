@@ -44,9 +44,10 @@ async function scenario({geoDir,cities,idleTimeout}) {
     return atomPolygons.has(msg.groups.shape[0])?'parent':'district';
   };
   Worker.prototype.postMessage=function(msg,...rest) {
-    if(!hooked.has(this)){hooked.add(this);this.addEventListener('message',({data})=>{const job=B.jobs.get(data.id);if(!job||job.done)return;job.done=performance.now();job.cancelled=!!data.cancelled;
+    if(!hooked.has(this)){hooked.add(this);this.addEventListener('message',({data})=>{const job=B.jobs.get(data.id);if(!job||job.done)return;job.done=performance.now();job.cancelled=!!data.cancelled;job.stats=data.stats||null;
       const errors=data.error?[data.error]:Object.values(data.errors||{});job.errors=errors;
       if(job.kind==='district'&&data.groups?.shape)job.rings=data.groups.shape.reduce((n,poly)=>n+poly.length,0);});}
+    if(msg&&(msg.operation||msg.url)&&!msg.profile)msg={...msg,profile:true}; // opt the worker into per-phase timings
     B.jobs.set(msg.id,{id:msg.id,kind:classify(msg),groups:msg.groups?Object.keys(msg.groups).length:0,sent:performance.now()});
     return original.call(this,msg,...rest);
   };
@@ -75,6 +76,8 @@ async function scenario({geoDir,cities,idleTimeout}) {
     const jobs=[...B.jobs.values()].filter(j=>j.id>=first),end=kind=>Math.max(0,...jobs.filter(j=>j.kind===kind&&!j.cancelled&&j.done).map(j=>j.done));
     const loadEnd=end('load')||t0,atoms=city.parents.flatMap(id=>e.parents.find(p=>p._id===id)?._children||[]).filter(a=>a.cityId===city.id);
     const district_=jobs.filter(j=>j.kind==='district'),finalJob=district_.filter(j=>!j.cancelled&&j.done).sort((a,b)=>b.done-a.done)[0];
+    const groupStats=[];for(const j of jobs)if(j.stats&&!j.cancelled)for(const [key,s] of Object.entries(j.stats))groupStats.push({kind:j.kind,key:key.length>72?key.slice(0,72)+'…':key,...s});
+    const sum=f=>Math.round(groupStats.reduce((n,g)=>n+(g[f]||0),0));
     return {label,settled,atoms:atoms.length,vertices:atoms.reduce((n,a)=>n+a._polygons.flat(2).length,0),
       loadMs:Math.round(loadEnd-t0),assignMs:Math.round(painted-loadEnd),
       parentMergeMs:end('parent')?Math.round(end('parent')-painted):0,finalDistrictMergeMs:end('district')?Math.round(end('district')-painted):0,
@@ -82,6 +85,9 @@ async function scenario({geoDir,cities,idleTimeout}) {
       parentJobs:jobs.filter(j=>j.kind==='parent').length,parentGroups:jobs.filter(j=>j.kind==='parent').reduce((n,j)=>n+j.groups,0),
       districtJobsRun:district_.filter(j=>!j.cancelled).length,districtJobsCancelled:district_.filter(j=>j.cancelled).length,
       finalOutlineRings:finalJob?.rings??null,finalOutlineError:finalJob?.errors?.[0]??null,
+      phaseTotals:{groups:groupStats.length,ms:sum('ms'),snapMs:sum('snapMs'),unionMs:sum('unionMs'),clipMs:sum('clipMs'),diffMs:sum('diffMs'),guardMs:sum('guardMs'),vertices:groupStats.reduce((n,g)=>n+(g.vertices||0),0)},
+      topGroups:groupStats.sort((a,b)=>b.ms-a.ms).slice(0,8).map(({key,kind,ms,vertices,method,snapMs,unionMs,clipMs,diffMs,guardMs,attempts})=>({key,kind,ms:Math.round(ms),vertices,method,snapMs:Math.round(snapMs||0),unionMs:Math.round(unionMs||0),clipMs:Math.round(clipMs||0),diffMs:Math.round(diffMs||0),guardMs:Math.round(guardMs||0),attempts})),
+      loadPhases:jobs.filter(j=>j.kind==='load'&&j.stats&&!j.cancelled).map(j=>j.stats),
       workerErrors:jobs.flatMap(j=>j.errors||[]).map(m=>m.slice(0,160)),notices:B.notices.slice(noticeStart).map(m=>m.slice(0,200)),
       unionStats:e.unionStats||null};
   }

@@ -14,7 +14,7 @@
     // picking, district outlines, statistics and export.
     const BATCH_VERTEX_LIMIT=60000;
     let mergeQueue=new Map(),mergeTimer=null,mergesInFlight=0,settledWaiters=[];
-    const unionStats={batches:0,groups:0,failed:0,retried:0,district:0,cancelled:0};
+    const unionStats={batches:0,groups:0,failed:0,retried:0,district:0,cancelled:0,differenced:0,fallbacks:0};
     const status=document.getElementById('editor-status'),done=document.getElementById('block-done');
     let statusTimer=null;
     function notice(text,error=false,lasting=false) {
@@ -91,7 +91,7 @@
       setElectionMargin(a);
       a.inc_med=a.inc_medhh?a.inc_medw/a.inc_medhh:0;a.age_avg=a.age_total?a.age_sum/a.age_total:0;
     }
-    function groupShape(p,atoms,key,blockId) {
+    function groupShape(p,atoms,key,blockId,difference) {
       if(atoms.length===1&&opened===p)return atoms[0];
       const values=aggregate(atoms,statKeys),rings=atoms.flatMap(a=>a.rings),signature=atoms.map(a=>a.id).join(',');
       const cached=merged.get(signature);
@@ -99,7 +99,7 @@
       g.bbox=bbox(g.rings);g.bboxArea=(g.bbox[2]-g.bbox[0])*(g.bbox[3]-g.bbox[1]);
       if(!merged.has(signature)&&!merging.has(signature)) {
         const vertices=rings.reduce((n,r)=>n+r.length,0);
-        merging.add(signature);mergeQueue.set(signature,{parent:p,vertices,polygons:atoms.map(a=>a._polygons)});
+        merging.add(signature);mergeQueue.set(signature,{parent:p,vertices,polygons:atoms.map(a=>a._polygons),difference});
         if(!mergeTimer)mergeTimer=setTimeout(flushMerges,0);
       }
       return g;
@@ -120,7 +120,7 @@
     }
     function sendMerges(batch) {
       const token=generation,groups={};let settled=false;
-      for(const [signature,item] of batch){groups[signature]=item.polygons;}
+      for(const [signature,item] of batch){groups[signature]=item.difference?{polygons:item.polygons,difference:item.difference}:item.polygons;}
       mergesInFlight+=batch.size;unionStats.batches++;
       // Runs exactly once per batch, whatever happens to the reply.
       const settle=()=>{if(settled)return;settled=true;mergesInFlight-=batch.size;if(token===generation)for(const signature of batch.keys())merging.delete(signature);settleMerges();};
@@ -130,6 +130,7 @@
         const failures=[];
         for(const [signature,polygons] of Object.entries(data.groups)) {
           unionStats.groups++;if(data.grids?.[signature]>1e-7)unionStats.retried++;
+          if(data.methods?.[signature]==='difference')unionStats.differenced++;else if(data.methods?.[signature]==='fallback')unionStats.fallbacks++;
           merged.set(signature,polygons);if(merged.size>512)merged.delete(merged.keys().next().value);
         }
         for(const [signature,message] of Object.entries(data.errors||{})){unionStats.failed++;merged.set(signature,null);failures.push(batch.get(signature).parent.precinct+': '+message);}
@@ -158,7 +159,23 @@
         }
         if(opened!==p&&groups.size===1) {
           p.districtId=p._children[0].districtId;visible.push(p);
-        }else for(const [key,atoms] of groups)visible.push(groupShape(p,atoms,String(atoms[0].districtId),opened===p?atoms[0].blockId:null));
+        }else{
+          // The dominant group of a mixed parent (more than half its vertices, nearly always the
+          // unassigned remainder after a city paint) is drawn as the parent record minus the
+          // merged rest; the worker's guards fall back to the exact union whenever the record
+          // disagrees with the block mesh, so the outline never loses a block.
+          const ranked=[...groups.values()].map(atoms=>({atoms,vertices:atoms.reduce((n,a)=>n+a.rings.reduce((m,r)=>m+r.length,0),0)}));
+          const total=ranked.reduce((n,g)=>n+g.vertices,0);
+          let members=null;
+          for(const {atoms,vertices} of ranked) {
+            let difference=null;
+            if(opened!==p&&p.rings&&p.rings.length&&vertices*2>total) {
+              members??=new Set(atoms);
+              difference={subject:p.rings,clips:[p._children.filter(a=>!members.has(a)).map(a=>a._polygons)]};
+            }
+            visible.push(groupShape(p,atoms,String(atoms[0].districtId),opened===p?atoms[0].blockId:null,difference));
+          }
+        }
         p._viewCache={version:p._version||0,open:opened===p,race,from:shift.from,to:shift.to,shapes:visible.slice(start)};
       }
       const geometryChanged=visible.length!==visibleRecords.length||visible.some((s,i)=>s!==visibleRecords[i]);

@@ -89,6 +89,47 @@ test('ring area is computed without cancellation at world coordinates near 1000'
   assert.equal(Math.abs(U.ringArea(sliver)),(top-1000)/2);
 });
 
+test('nestRings nests serialized record subpaths into polygons by containment',()=>{
+  const outer=square(0,0,4,4)[0],hole=square(1,1,2,2)[0],island=square(10,10)[0];
+  const polys=U.nestRings([island,hole,outer]);
+  assert.equal(polys.length,2);
+  assert.equal(polys[0][0],outer);assert.equal(polys[0][1],hole);assert.equal(polys[1][0],island);
+});
+
+test('robustDifference draws a remainder as the record minus the assigned pieces',()=>{
+  const atom=geom=>[geom];
+  const result=U.robustDifference([square(0,0,4,4)[0]],[[atom(square(0,0,2,2)),atom(square(0,2,2,2))]],[atom(square(2,0,2,2)),atom(square(2,2,2,2))]);
+  assert.equal(result.method,'difference');assert.equal(result.grid,1e-7);
+  assert.ok(Math.abs(result.outputArea-8)<1e-9);
+  assert.ok(covers(result.polygons,[3,1])&&covers(result.polygons,[3,3]));
+  assert.equal(covers(result.polygons,[1,1]),false);
+});
+
+test('record gaps are added back: far pieces append and boundary pieces merge',()=>{
+  const atom=geom=>[geom];
+  const result=U.robustDifference([square(0,0,4,4)[0]],[[atom(square(0,0,2,2)),atom(square(0,2,2,2))]],[atom(square(2,0,2,2)),atom(square(2,2,2,2)),atom(square(10,10)),atom([[[4,0],[5,0],[5,1],[4,1],[4,0]]])]);
+  assert.equal(result.method,'difference');
+  assert.equal(result.repaired,2);assert.equal(result.appended,1);
+  assert.ok(covers(result.polygons,[10.5,10.5]),'a piece clearing the record appends unchanged');
+  assert.ok(covers(result.polygons,[4.5,0.5]),'a piece straddling the outline merges in');
+  assert.ok(Math.abs(result.outputArea-10)<1e-9);
+});
+
+test('a record larger than its mesh fails the area guard and falls back to the exact union',()=>{
+  const atom=geom=>[geom];
+  const result=U.robustDifference([square(0,0,10,10)[0]],[[atom(square(0,0,2,2))]],[atom(square(2,0,2,2)),atom(square(2,2,2,2))]);
+  assert.equal(result.method,'union');assert.match(result.fallbackReason,/exceeds remainder area/);
+  assert.ok(Math.abs(result.outputArea-8)<1e-9);
+  assert.ok(covers(result.polygons,[3,1])&&covers(result.polygons,[3,3]));
+});
+
+test('a difference without a subject or clips falls back to the union instead of throwing',()=>{
+  const atom=geom=>[geom];
+  const result=U.robustDifference([],[[atom(square(0,0))]],[atom(square(2,2))]);
+  assert.equal(result.method,'union');assert.match(result.fallbackReason,/subject and at least one clip/);
+  assert.ok(Math.abs(result.outputArea-1)<1e-9);
+});
+
 test('balanced reduction matches the chunked union on simple inputs',()=>{
   const tiles=[];for(let x=0;x<23;x++)for(let y=0;y<11;y++)if((x*7+y*3)%11)tiles.push(square(x,y));
   const a=U.balancedUnion(tiles),b=chunked(tiles);
@@ -147,5 +188,22 @@ test('worker merges a batch of real parents and reports grid and areas per group
   const [reply]=await w.settle(1);
   assert.equal(Object.keys(reply.errors).length,0);
   assert.equal(reply.grids.lancaster,1e-7);assert.equal(reply.grids.palmdale,1e-7);
+  assert.equal(reply.methods.lancaster,'union');assert.equal(reply.methods.palmdale,'union');
   for(const [input,output] of Object.values(reply.areas))assert.ok(output<=input+1e-9&&(input-output)/input<1e-4);
+});
+test('worker differences a dominant group against its parent record and reports the method',async()=>{
+  const w=workerSandbox(),atom=geom=>[geom],record=square(0,0,4,4)[0];
+  w.send({id:1,operation:'union',groups:{remainder:{polygons:[atom(square(2,0,2,2)),atom(square(2,2,2,2))],difference:{subject:[record],clips:[[atom(square(0,0,2,2)),atom(square(0,2,2,2))]]}},city:atom(square(0,0,2,2))}});
+  const [reply]=await w.settle(1);
+  assert.equal(reply.errors.remainder,undefined);assert.equal(reply.errors.city,undefined);
+  assert.equal(reply.methods.remainder,'difference');assert.equal(reply.methods.city,'union');
+  assert.ok(Math.abs(U.geomArea(reply.groups.remainder)-8)<1e-9);
+});
+test('a record that fails the difference guards still merges by exact union in the same reply',async()=>{
+  const w=workerSandbox(),atom=geom=>[geom];
+  w.send({id:1,operation:'union',groups:{remainder:{polygons:[atom(square(2,0,2,2)),atom(square(2,2,2,2))],difference:{subject:[square(0,0,10,10)[0]],clips:[[atom(square(0,0,2,2))]]}}}});
+  const [reply]=await w.settle(1);
+  assert.equal(reply.errors.remainder,undefined);
+  assert.equal(reply.methods.remainder,'fallback');
+  assert.ok(Math.abs(U.geomArea(reply.groups.remainder)-8)<1e-9);
 });
