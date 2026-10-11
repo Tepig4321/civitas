@@ -93,4 +93,18 @@ class GeometryTests(unittest.TestCase):
   self.assertTrue(b.matching_coverage(repaired))
   self.assertEqual(len(repaired[0].interiors),1)
   self.assertEqual(repaired[0].symmetric_difference(source).area,0)
+ def test_los_angeles_source_edge_cannot_hide_a_nonzero_strip(self):
+  import json
+  fixture=json.loads((Path(__file__).parent/'fixtures/geometry/los-angeles-strip.json').read_text())
+  geoms=[b.decode_polygons(atom['polygons']) for atom in fixture['atoms']]
+  required={i:atom['id'] for i,atom in enumerate(fixture['atoms']) if atom['required']}
+  source=b.decode_polygons(fixture['source'])
+  # With the exact Census exterior, coarse GEOS noding can absorb a real
+  # 115 m² fragment. Retain all nonzero pieces or reject the result for retry.
+  try:repaired=b.repair_coverage(geoms,[source],snapping_distance=1e-9,required_ids=required)
+  except RuntimeError as error:
+   self.assertIn('Geometry repair would hide a nonzero atom:',str(error))
+  else:
+   for i,atom_id in required.items():self.assertFalse(repaired[i].is_empty,atom_id)
+   b.validate_coverage_footprint(repaired,[source])
 if __name__=='__main__':unittest.main()
