@@ -22,8 +22,13 @@ const { prepare } = require('./test-environment.cjs');
     await page.evaluate(() => CivitasApp.ready());
 
     const getSidebarWidth = async () => {
-      // Wait for any CSS width transitions to settle
-      await page.waitForTimeout(250);
+      // A hidden CI window can start its transition later than a fixed sleep.
+      // Observe the panel's actual layout before asserting the requested width.
+      await page.waitForFunction(() => {
+        const panel = document.getElementById('district-sidebar');
+        const width = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--district-sidebar-w')) || 0;
+        return panel.offsetWidth === width && panel.getAnimations().every(animation => animation.playState !== 'running');
+      }, null, { polling: 100, timeout: 15000 });
       return page.evaluate(() => {
         const panel = document.getElementById('district-sidebar');
         const cssVar = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--district-sidebar-w')) || 0;
