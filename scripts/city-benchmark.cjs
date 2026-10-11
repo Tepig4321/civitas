@@ -76,7 +76,7 @@ async function scenario({geoDir,cities,idleTimeout}) {
     const jobs=[...B.jobs.values()].filter(j=>j.id>=first),end=kind=>Math.max(0,...jobs.filter(j=>j.kind===kind&&!j.cancelled&&j.done).map(j=>j.done));
     const loadEnd=end('load')||t0,atoms=city.parents.flatMap(id=>e.parents.find(p=>p._id===id)?._children||[]).filter(a=>a.cityId===city.id);
     const district_=jobs.filter(j=>j.kind==='district'),finalJob=district_.filter(j=>!j.cancelled&&j.done).sort((a,b)=>b.done-a.done)[0];
-    const groupStats=[];for(const j of jobs)if(j.stats&&!j.cancelled)for(const [key,s] of Object.entries(j.stats))groupStats.push({kind:j.kind,key:key.length>72?key.slice(0,72)+'…':key,...s});
+    const groupStats=[];for(const j of jobs)if(j.kind!=='load'&&j.stats&&!j.cancelled)for(const [key,s] of Object.entries(j.stats))groupStats.push({kind:j.kind,key:key.length>72?key.slice(0,72)+'…':key,...s});
     const sum=f=>Math.round(groupStats.reduce((n,g)=>n+(g[f]||0),0));
     return {label,settled,atoms:atoms.length,vertices:atoms.reduce((n,a)=>n+a._polygons.flat(2).length,0),
       loadMs:Math.round(loadEnd-t0),assignMs:Math.round(painted-loadEnd),

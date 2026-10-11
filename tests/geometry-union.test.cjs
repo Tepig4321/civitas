@@ -56,6 +56,11 @@ test('every populated fragment of the real Los Angeles strip survives the union'
     const probe=U.interiorPoint(poly);
     assert.ok(covers(result.polygons,probe.point),a.id+' is covered');
   }
+  const assigned=atoms.find(a=>a.id!=='060375526013004:9d75dd1cbe8f8e6a');
+  const remainder=atoms.filter(a=>a!==assigned);
+  const difference=U.robustDifference(result.polygons.flat(),[[assigned.world]],remainder.map(a=>a.world));
+  for(const a of remainder.filter(a=>a.required))for(const poly of a.world)
+    assert.ok(covers(difference.polygons,U.interiorPoint(poly).point),a.id+' survives differencing');
   // A grid coarse enough (about 0.57 m) to collapse a fragment is rejected rather than losing it.
   assert.throws(()=>U.robustUnion(atoms.map(a=>a.world),{grids:[1e-3]}),/collapse|missing/);
 });
@@ -121,6 +126,65 @@ test('a record larger than its mesh fails the area guard and falls back to the e
   assert.equal(result.method,'union');assert.match(result.fallbackReason,/exceeds remainder area/);
   assert.ok(Math.abs(result.outputArea-8)<1e-9);
   assert.ok(covers(result.polygons,[3,1])&&covers(result.polygons,[3,3]));
+});
+
+test('a partially missing atom is repaired even when its interior probe stays covered',()=>{
+  const remainder=[square(1,0,9,10)],before=JSON.stringify(remainder);
+  const result=U.robustDifference([square(0,0,10,8)[0]],[[square(0,0,1,10)]],remainder);
+  assert.ok(Math.abs(result.outputArea-90)<1e-9);
+  assert.ok(covers(result.polygons,[5,9]),'the part beyond the parent record is retained');
+  assert.equal(result.repaired,1);
+  assert.equal(JSON.stringify(remainder),before);
+});
+
+test('equal missing and extra areas cannot disguise a partially uncovered atom',()=>{
+  // This record shifts one unit downward. Its missing top strip and extra bottom strip
+  // have equal area, and the source atom's probe remains covered.
+  const result=U.robustDifference([square(0,-1,10,10)[0]],[[square(0,-1,1,10)]],[square(1,0,9,10)]);
+  assert.equal(result.method,'union');assert.match(result.fallbackReason,/exceeds remainder area/);
+  assert.ok(covers(result.polygons,[5,9.5]));
+  assert.equal(covers(result.polygons,[5,-0.5]),false);
+  assert.ok(Math.abs(result.outputArea-90)<1e-9);
+});
+
+test('a result hole inside an atom is repaired without filling a genuine source hole',()=>{
+  const outer=square(0,0,10,10)[0],recordHole=square(7,7,1,1)[0],assigned=square(0,0,1,10);
+  const result=U.robustDifference([outer,recordHole],[[assigned]],[square(1,0,9,10)]);
+  assert.ok(covers(result.polygons,[7.5,7.5]));assert.equal(result.repaired,1);
+  const source=[square(1,0,9,10)[0],recordHole];
+  const genuine=U.robustDifference([outer,recordHole],[[assigned]],[source]);
+  assert.equal(covers(genuine.polygons,[7.5,7.5]),false);
+  assert.ok(Math.abs(genuine.outputArea-89)<1e-9);
+});
+
+test('remainder snapping rejects a ring wider than the world precision instead of dropping it',()=>{
+  const thin=square(2.0000016,0,0.0000006,1);
+  // Force the fallback grid: the thin remainder collapses, while subject and clip stay wide.
+  const subject=[[[0,0],[2.0000022,0],[2.0000022,1],[10,1],[10,10],[0,10],[0,0]]];
+  const clip=[[[0,0],[2.0000016,0],[2.0000016,1],[0,1],[0,0]]];
+  assert.throws(()=>U.robustDifference(subject,[[clip]],[thin,square(0,1,10,9)],{grids:[1e-6]}),/wider than 1e-7.*collapse/);
+});
+
+test('boundary coverage agrees with exact clipping across holes, islands and concave sources',()=>{
+  const pieces=[];
+  for(let x=0;x<12;x++)for(let y=0;y<12;y++)if((x+y)%3)pieces.push(square(x*3,y*3,2));
+  const result=polygonClipping.union(...pieces),check=U.needsCoverageRepair(result);
+  let seed=92341;
+  const random=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed/2**32;};
+  for(let i=0;i<600;i++) {
+    let poly;
+    if(i%4===0) {
+      const [x,y]=pieces[Math.floor(random()*pieces.length)][0][0];
+      poly=square(x+.2,y+.2,.4);
+    }else{
+      const x=random()*45-5,y=random()*45-5,w=random()*5+.1;
+      poly=i%3===0
+        ?[[[x,y],[x+w,y],[x+w,y+w/3],[x+w/3,y+w/3],[x+w/3,y+w],[x,y+w],[x,y]]]
+        :square(x,y,w,random()*5+.1);
+    }
+    const missing=U.geomArea(polygonClipping.difference(poly,result));
+    assert.equal(check(poly),missing>1e-9,'coverage sample '+i);
+  }
 });
 
 test('a difference without a subject or clips falls back to the union instead of throwing',()=>{

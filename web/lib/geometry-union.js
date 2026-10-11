@@ -166,11 +166,106 @@
     }
     return inside;
   }
+  // Check coverage of the whole polygon, including cuts beyond its interior probe and
+  // enclosed result holes. The spatial cells conservatively index every result edge's box.
+  // An edge entering the source interior beyond the snap displacement requires repair;
+  // if no edge does so, one interior point establishes which side contains the source.
+  function needsCoverageRepair(polygons, margin = 0) {
+    if (!polygons.length) return () => true;
+    const edges = [];
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const poly of polygons) for (const ring of poly) for (let i = 1; i < ring.length; i++) {
+      const a = ring[i - 1], b = ring[i]; edges.push([a, b]);
+      x0 = Math.min(x0, a[0], b[0]); y0 = Math.min(y0, a[1], b[1]);
+      x1 = Math.max(x1, a[0], b[0]); y1 = Math.max(y1, a[1], b[1]);
+    }
+    const count = 2 ** Math.min(7, Math.ceil(Math.log2(Math.max(1, Math.sqrt(edges.length)))));
+    const dx = (x1 - x0) / count, dy = (y1 - y0) / count;
+    const col = x => Math.max(0, Math.min(count - 1, Math.floor((x - x0) / dx)));
+    const row = y => Math.max(0, Math.min(count - 1, Math.floor((y - y0) / dy)));
+    const boundary = new Map(), inside = containment(polygons);
+    for (const [index, [a, b]] of edges.entries()) {
+      const left = col(Math.min(a[0], b[0])), right = col(Math.max(a[0], b[0]));
+      const top = row(Math.min(a[1], b[1])), bottom = row(Math.max(a[1], b[1]));
+      for (let y = top; y <= bottom; y++) for (let x = left; x <= right; x++) {
+        const key = y * count + x;
+        if (!boundary.has(key)) boundary.set(key, []);
+        boundary.get(key).push(index);
+      }
+    }
+    return poly => {
+      let a = Infinity, b = Infinity, c = -Infinity, d = -Infinity;
+      for (const ring of poly) for (const [x, y] of ring) {
+        a = Math.min(a, x); b = Math.min(b, y); c = Math.max(c, x); d = Math.max(d, y);
+      }
+      if (c < x0 || a > x1 || d < y0 || b > y1) return true;
+      const left = col(a), right = col(c), top = row(b), bottom = row(d);
+      let touches = false;
+      for (let y = top; y <= bottom && !touches; y++) for (let x = left; x <= right; x++)
+        if (boundary.has(y * count + x)) { touches = true; break; }
+      if (!touches) return !inside(poly[0][0]);
+      // Shared source/result edges do not cut the source interior. Split each nearby result
+      // edge at every source-boundary intersection; if none of the intervening spans is
+      // inside the source, coverage is constant throughout it. This avoids clipping every
+      // boundary block while still detecting cuts and holes that an interior probe misses.
+      const sourceEdges = poly.flatMap(ring => ring.slice(1).map((p, i) => [ring[i], p]));
+      const epsilon = 64 * Number.EPSILON * Math.max(1, Math.abs(a), Math.abs(b), Math.abs(c), Math.abs(d));
+      const nearby = new Set();
+      for (let y = top; y <= bottom; y++) for (let x = left; x <= right; x++)
+        for (const index of boundary.get(y * count + x) || []) nearby.add(index);
+      const cuts = [...nearby].some(index => {
+        const [p, q] = edges[index], vx = q[0] - p[0], vy = q[1] - p[1], length = vx * vx + vy * vy;
+        if (!length || Math.max(p[0], q[0]) < a || Math.min(p[0], q[0]) > c ||
+            Math.max(p[1], q[1]) < b || Math.min(p[1], q[1]) > d) return false;
+        const ts = [0, 1];
+        const band = Math.max(margin, epsilon) * Math.sqrt(length);
+        for (const [s, e] of sourceEdges) {
+          const wx = e[0] - s[0], wy = e[1] - s[1], sx = s[0] - p[0], sy = s[1] - p[1];
+          const denominator = vx * wy - vy * wx;
+          if (denominator) {
+            const t = (sx * wy - sy * wx) / denominator, u = (sx * vy - sy * vx) / denominator;
+            if (t >= 0 && t <= 1 && u >= 0 && u <= 1) ts.push(t);
+          }
+          // Refine parallel displacement bands at source vertices too. A simplified result
+          // edge can follow several collinear source edges without crossing any of them.
+          for (const v of [s, e]) {
+            if (Math.abs((v[0] - p[0]) * vy - (v[1] - p[1]) * vx) <= band) {
+              const t = ((v[0] - p[0]) * vx + (v[1] - p[1]) * vy) / length;
+              if (t > 0 && t < 1) ts.push(t);
+            }
+          }
+        }
+        ts.sort((a, b) => a - b);
+        for (let i = 1; i < ts.length; i++) {
+          if (ts[i] === ts[i - 1]) continue;
+          const t = (ts[i - 1] + ts[i]) / 2, point = [p[0] + t * vx, p[1] + t * vy];
+          if (point[0] < a || point[0] > c || point[1] < b || point[1] > d) continue;
+          const ends = [ts[i - 1], ts[i]].map(t => [p[0] + t * vx, p[1] + t * vy]);
+          const onBoundary = sourceEdges.some(([s, e]) => {
+            const dx = e[0] - s[0], dy = e[1] - s[1], len = dx * dx + dy * dy;
+            // Both endpoints must lie in the same edge's displacement band. Distance to a
+            // line segment is convex, so the entire span stays in that band; a midpoint
+            // alone could overlook a cut beside a concave corner.
+            return ends.every(([x, y]) => {
+              const t = len ? Math.max(0, Math.min(1, ((x - s[0]) * dx + (y - s[1]) * dy) / len)) : 0;
+              return Math.hypot(x - s[0] - t * dx, y - s[1] - t * dy) <= Math.max(margin, epsilon);
+            });
+          });
+          if (!onBoundary && poly.reduce((hit, ring) => pipRing(ring, point) ? !hit : hit, false)) return true;
+        }
+        return false;
+      });
+      if (cuts) return true;
+      const probe = interiorPoint(poly);
+      if (!probe) throw new Error('could not establish remainder coverage');
+      return !inside(probe.point);
+    };
+  }
   // A display remainder as (parent outline) minus (merged assigned pieces) instead of a full
   // union of every remainder atom, which is what makes large remainders slow. The parent
-  // record is only trusted when it verifies: the result must cover an interior point of every
-  // remainder piece (like robustUnion) and must not exceed their total area by more than one
-  // snap displacement per source edge. A record that misses mesh pieces — unmapped-block
+  // record is only trusted when it verifies: missing area in each remainder piece and extra
+  // total area must stay within one snap displacement per source edge. A record that misses
+  // mesh pieces — unmapped-block
   // debris outside the record outline, block-group outlines drifting from their blocks — has
   // those pieces added back (pieces clearing the result append; the rest merge in one sweep;
   // coverage only grows, so only the repaired pieces re-verify). A record that still
@@ -197,25 +292,30 @@
         let inputArea = 0, perimeter = 0;
         for (const g of remainder) { inputArea += geomArea(g); perimeter += geomPerimeter(g); }
         const displacement = grid * Math.SQRT1_2, tolerance = displacement * perimeter;
-        const snappedRemainder = snapPolygons(remainder, grid);
-        // Remainder atoms that snapping collapses entirely (zero-width debris) cannot be lost.
+        const snappedRemainder = snapPolygons(remainder, grid, collapsed);
+        const lost = collapsed.filter(c => c.width > QUANTUM).length;
+        if (lost) throw new Error(lost + ' ring(s) wider than ' + QUANTUM + ' collapse on this grid');
+        // Repair only adds coverage, so an already oversized difference cannot be fixed.
+        if (geomArea(polygons) > inputArea + tolerance) {
+          errors.push('grid ' + grid + ': difference area exceeds remainder area before repair');
+          break; // an incompatible record needs the full union, not another display grid
+        }
+        // A nondegenerate remainder cannot be replaced by an empty result.
         if (snappedRemainder.length && !polygons.length) throw new Error('difference is empty');
         // Mesh pieces the record does not cover are added back rather than dropped. Repair only
-        // unions area into the result, so previously covered probes stay covered and only the
+        // unions area into the result, so previously covered pieces stay covered and only the
         // repaired pieces need re-verifying.
         const boxOf = poly => {
           let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
           for (const ring of poly) for (const [x, y] of ring) { if (x < x0) x0 = x; if (y < y0) y0 = y; if (x > x1) x1 = x; if (y > y1) y1 = y; }
           return [x0, y0, x1, y1];
         };
-        const inside = containment(polygons);
+        const needsRepair = needsCoverageRepair(polygons, displacement);
         const boxes = polygons.map(boxOf);
-        let unchecked = 0, repaired = 0, appended = 0;
+        let repaired = 0, appended = 0;
         const uncovered = [];
         for (const geom of snappedRemainder) for (const poly of geom) {
-          const probe = interiorPoint(poly);
-          if (!probe || probe.clearance <= displacement) { unchecked++; continue; }
-          if (!inside(probe.point)) uncovered.push(poly);
+          if (needsRepair(poly)) uncovered.push(poly);
         }
         if (uncovered.length) {
           const near = [];
@@ -225,33 +325,22 @@
             else { polygons.push(poly); appended++; }
           }
           if (near.length) polygons = polygonClipping.union(polygons, ...near);
-          // Even-odd against rings sharing the point's y range; a ring outside it cannot cross
-          // the horizontal ray, so this is the full parity without indexing every edge again.
-          const repairedBoxes = polygons.map(boxOf);
-          const recheck = point => {
-            let hit = false;
-            for (let i = 0; i < polygons.length; i++) {
-              if (point[1] < repairedBoxes[i][1] || point[1] > repairedBoxes[i][3]) continue;
-              for (const ring of polygons[i]) if (pipRing(ring, point)) hit = !hit;
-            }
-            return hit;
-          };
+          const recheck = needsCoverageRepair(polygons, displacement);
           let still = 0;
           for (const poly of uncovered) {
-            const probe = interiorPoint(poly);
-            if (!probe || probe.clearance <= displacement) { unchecked++; continue; }
-            if (!recheck(probe.point)) still++;
+            if (recheck(poly)) still++;
           }
           if (still) throw new Error(still + ' remainder piece(s) missing after adding record gaps');
           repaired = uncovered.length;
         }
         const outputArea = geomArea(polygons);
-        if (outputArea > inputArea + tolerance) throw new Error('difference area ' + outputArea + ' exceeds remainder area ' + inputArea);
-        const lost = collapsed.filter(c => c.width > QUANTUM).length;
-        if (lost) throw new Error(lost + ' ring(s) wider than ' + QUANTUM + ' collapse on this grid');
+        if (outputArea > inputArea + tolerance) {
+          errors.push('grid ' + grid + ': difference area ' + outputArea + ' exceeds remainder area ' + inputArea);
+          break;
+        }
         if (timing) { timing.clipMs += t1 - t0; timing.diffMs += t2 - t1; timing.guardMs += performance.now() - t2; timing.attempts = (timing.attempts || 0) + 1; }
         return {polygons, grid, inputArea, outputArea, tolerance, droppedRings: collapsed.length,
-          droppedArea: collapsed.reduce((n, c) => n + c.area, 0), unchecked, repaired, appended, attempts: errors, method: 'difference'};
+          droppedArea: collapsed.reduce((n, c) => n + c.area, 0), unchecked: 0, repaired, appended, attempts: errors, method: 'difference'};
       } catch (error) { errors.push('grid ' + grid + ': ' + error.message); }
     }
     // The parent record does not verify against this mesh: compute the outline exactly.
@@ -304,5 +393,5 @@
     }
     throw new Error('Could not merge outline (' + errors.join('; ') + ')');
   }
-  return {GRIDS, QUANTUM, snapPolygons, balancedUnion, robustUnion, robustDifference, nestRings, interiorPoint, geomArea, geomPerimeter, ringArea};
+  return {GRIDS, QUANTUM, snapPolygons, balancedUnion, robustUnion, robustDifference, needsCoverageRepair, nestRings, interiorPoint, geomArea, geomPerimeter, ringArea};
 });
