@@ -39,6 +39,8 @@ Existing revision-3 county data can receive matching shared edges with `npm run 
 
 Noding retries use progressively finer tolerances without relaxing those guards. When GEOS flags a valid point where a hole touches its shell, an independent check verifies disjoint interiors, identical shared segments and matching vertices against every intersecting neighbor. Overlaps and partially noded edges still fail validation.
 
+Final noding may leave microscopic enclosed voids. Only voids wholly covered by the source and below the roundoff area limit are assigned to an adjacent atom; real source holes remain protected. For a diagnosed county, `--snapping-distance 1e-10` (or a finer supported tolerance) skips known unsuccessful coarser attempts. The actual accepted tolerance is recorded in the county report, and all validation checks still run.
+
 ## Performance work
 
 `npm run benchmark:render -- . label` records the existing dense Los Angeles canvas benchmark with runtime, hardware, dataset hashes, raw samples and process-memory observations in `dist/benchmarks/`. Compare runs on the same machine, viewport and dataset with other heavy jobs stopped. It measures synchronous canvas rendering after initialization with synthetic election colors; it does not measure startup, block decoding, city edits or end-to-end input latency.

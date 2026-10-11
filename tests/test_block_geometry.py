@@ -84,4 +84,13 @@ class GeometryTests(unittest.TestCase):
   extra_node=Polygon([(1,0),(2,0),(2,1),(1,1),(1,.5)])
   self.assertFalse(b.matching_coverage([box(0,0,1,1),extra_node]))
   self.assertFalse(b.matching_coverage([box(0,0,1,1),box(1,.25,2,.75)]))
+ def test_roundoff_void_repair_protects_real_source_holes(self):
+  outer=[(0,0),(1e-5,0),(1e-5,1e-5),(0,1e-5)]
+  real=[(1e-6,1e-6),(1.1e-6,1e-6),(1.1e-6,1.1e-6),(1e-6,1.1e-6)]
+  crack=[(5e-6,5e-6),(5.1e-6,5e-6),(5.1e-6,5.1e-6),(5e-6,5.1e-6)]
+  source=Polygon(outer,holes=[real])
+  repaired=b.fill_roundoff_voids([Polygon(outer,holes=[real,crack])],source,4e-13)
+  self.assertTrue(b.matching_coverage(repaired))
+  self.assertEqual(len(repaired[0].interiors),1)
+  self.assertEqual(repaired[0].symmetric_difference(source).area,0)
 if __name__=='__main__':unittest.main()

@@ -130,6 +130,20 @@ def validate_coverage_footprint(geoms,source_geoms,boundary_tolerance=1e-8):
  excess=footprint.difference(source.buffer(boundary_tolerance)).area
  if max(missing,excess)>1e-14:raise RuntimeError('Geometry does not conserve the source footprint: '+str((missing,excess)))
 
+def fill_roundoff_voids(geoms,source,area_limit):
+ # Final floating-point noding can leave microscopic enclosed faces. Fill only
+ # faces wholly covered by the source; its real holes and exterior are excluded.
+ footprint=union_all(geoms);tree=STRtree(geoms)
+ for poly in polygons(footprint):
+  for ring in poly.interiors:
+   void=Polygon(ring)
+   if void.area>area_limit or not source.covers(void):continue
+   candidates=list(tree.query(void,predicate='intersects'))
+   if not candidates:raise RuntimeError('Enclosed roundoff void has no adjacent atom')
+   owner=max(candidates,key=lambda i:(void.boundary.intersection(geoms[i].boundary).length,-int(i)))
+   geoms[owner]=polygonal(union_all([geoms[owner],void]))
+ return geoms
+
 def repair_coverage(geoms,source_geoms,gap_width=2e-7,snapping_distance=1e-9):
  """Node shared edges and repair only gaps inside the authoritative source coverage.
 
@@ -160,16 +174,19 @@ def repair_coverage(geoms,source_geoms,gap_width=2e-7,snapping_distance=1e-9):
   fixed[owner]=polygonal(union_all([fixed[owner],part]))
  # Node the source-clipping intersections without moving its outlines materially.
  fixed=coverage_clean(fixed+[background],gap_width=0,snapping_distance=snapping_distance)[:-1]
+ fixed=fill_roundoff_voids(list(fixed),source,gap_width**2*10)
  if not matching_coverage(fixed):raise RuntimeError('Repaired block edges do not form a valid coverage')
  validate_coverage_footprint(fixed,[source])
  return list(fixed)
 
-def repair_atom_geometry(atoms,source_geoms):
+def repair_atom_geometry(atoms,source_geoms,*,initial_snapping_distance=1e-9):
+ tolerances=[1e-9,1e-10,1e-11,1e-12]
+ if initial_snapping_distance not in tolerances:raise ValueError('Unsupported initial noding tolerance')
  original=[decode_polygons(a['polygons']) for a in atoms]
  # Nearly coincident junctions can make GEOS absorb a real strip at one node
  # tolerance. Retry from the untouched inputs with finer noding, accepting a
  # result only after the same coverage, source-footprint and nonzero-ID guards.
- for snapping_distance in [1e-9,1e-10,1e-11,1e-12]:
+ for snapping_distance in tolerances[tolerances.index(initial_snapping_distance):]:
   try:
    geoms=repair_coverage(original,source_geoms,snapping_distance=snapping_distance)
    for atom,geom in zip(atoms,geoms):

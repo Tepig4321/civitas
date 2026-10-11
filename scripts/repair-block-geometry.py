@@ -14,7 +14,7 @@ b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)
 def numeric_digest(atoms):
  return hashlib.sha256(json.dumps([{k:v for k,v in atom.items() if k!='polygons'} for atom in atoms],sort_keys=True,separators=(',',':')).encode()).hexdigest()
 
-def repair(slug,resume=False):
+def repair(slug,resume=False,snapping_distance=1e-9):
  report_path=b.OUT/'reports'/f'{slug}.json'
  report=json.loads(report_path.read_text())
  if resume and report.get('geometryRevision')==b.GEOMETRY_REVISION:return
@@ -25,7 +25,7 @@ def repair(slug,resume=False):
  source_fields=dict(zip(meta['fields'],fields))
  if set(source_fields['GEOID20'])!={a['block'] for a in doc['atoms']}:raise RuntimeError('Source block IDs do not match: '+slug)
  print('Repairing',slug,len(doc['atoms']),'atoms',flush=True)
- geoms,coverage=b.repair_atom_geometry(doc['atoms'],from_wkb(wkb))
+ geoms,coverage=b.repair_atom_geometry(doc['atoms'],from_wkb(wkb),initial_snapping_distance=snapping_distance)
  if numeric_digest(doc['atoms'])!=before:raise RuntimeError('Geometry repair changed nongeometry data: '+slug)
  summaries={}
  for geo in b.GEO:
@@ -51,15 +51,17 @@ def repair(slug,resume=False):
  print('Repaired',slug,'with identical atom IDs, statistics, votes and memberships',flush=True)
 
 if __name__=='__main__':
- parser=argparse.ArgumentParser();parser.add_argument('--counties',nargs='+');parser.add_argument('--resume',action='store_true');parser.add_argument('--jobs',type=int,choices=range(1,5),default=1);args=parser.parse_args()
+ parser=argparse.ArgumentParser();parser.add_argument('--counties',nargs='+');parser.add_argument('--resume',action='store_true');parser.add_argument('--jobs',type=int,choices=range(1,5),default=1)
+ parser.add_argument('--snapping-distance',type=float,choices=[1e-9,1e-10,1e-11,1e-12],default=1e-9,help='Start at a known finer noding tolerance; all audit guards still apply.')
+ args=parser.parse_args()
  slugs=args.counties or json.loads((b.OUT/'manifest.json').read_text())['counties']
  if args.jobs==1:
-  for slug in slugs:repair(slug,args.resume)
+  for slug in slugs:repair(slug,args.resume,args.snapping_distance)
  else:
   # Separate counties have separate atomic outputs. Bound GEOS memory use rather
   # than creating one worker per county; each thread opens its own source dataset.
   with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-   futures={pool.submit(repair,slug,args.resume):slug for slug in slugs}
+   futures={pool.submit(repair,slug,args.resume,args.snapping_distance):slug for slug in slugs}
    try:
     for future in as_completed(futures):
      try:future.result()
