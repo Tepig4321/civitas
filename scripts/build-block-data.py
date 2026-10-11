@@ -113,8 +113,9 @@ def matching_coverage(geoms):
    coords=list(shared.coords)
    return all(tuple(sorted((a,c))) in left[1]&right[1] for a,c in zip(coords,coords[1:]))
   return all(shared_matches(part,left,right) for part in shared.geoms)
- for i,edge in enumerate(coverage_invalid_edges(geoms)):
-  if edge.is_empty:continue
+ flagged=[i for i,edge in enumerate(coverage_invalid_edges(geoms)) if not edge.is_empty]
+ if not flagged:return False
+ for i in flagged:
   for j in tree.query(geoms[i],predicate='intersects'):
    j=int(j)
    if i==j:continue
@@ -144,7 +145,7 @@ def fill_roundoff_voids(geoms,source,area_limit):
    geoms[owner]=polygonal(union_all([geoms[owner],void]))
  return geoms
 
-def repair_coverage(geoms,source_geoms,gap_width=2e-7,snapping_distance=1e-9):
+def repair_coverage(geoms,source_geoms,gap_width=2e-7,snapping_distance=1e-9,required_ids=None):
  """Node shared edges and repair only gaps inside the authoritative source coverage.
 
  Work on the actual serialized lon/lat coordinates, after independent overlays and
@@ -157,6 +158,8 @@ def repair_coverage(geoms,source_geoms,gap_width=2e-7,snapping_distance=1e-9):
  x0,y0,x1,y1=source.bounds
  background=polygonal(box(x0-1,y0-1,x1+1,y1+1).difference(source))
  fixed=coverage_clean([polygonal(g) for g in geoms]+[background],gap_width=gap_width,snapping_distance=snapping_distance)[:-1]
+ for i,atom_id in (required_ids or {}).items():
+  if fixed[i].is_empty:raise RuntimeError('Geometry repair would hide a nonzero atom: '+atom_id)
  # Independently projected straight source segments can bow slightly in lon/lat.
  # Align the county exterior/real holes back to the source and give each residual
  # border sliver to its adjacent atom, with a hard bound against missing data.
@@ -183,17 +186,15 @@ def repair_atom_geometry(atoms,source_geoms,*,initial_snapping_distance=1e-9):
  tolerances=[1e-9,1e-10,1e-11,1e-12]
  if initial_snapping_distance not in tolerances:raise ValueError('Unsupported initial noding tolerance')
  original=[decode_polygons(a['polygons']) for a in atoms]
+ required_ids={i:a['id'] for i,a in enumerate(atoms) if any(a['stats'].values() if isinstance(a['stats'],dict) else a['stats']) or any(any(v) for v in a['votes'].values())}
  # Nearly coincident junctions can make GEOS absorb a real strip at one node
  # tolerance. Retry from the untouched inputs with finer noding, accepting a
  # result only after the same coverage, source-footprint and nonzero-ID guards.
  for snapping_distance in tolerances[tolerances.index(initial_snapping_distance):]:
   try:
-   geoms=repair_coverage(original,source_geoms,snapping_distance=snapping_distance)
-   for atom,geom in zip(atoms,geoms):
-    if geom.is_empty:
-     values=atom['stats'].values() if isinstance(atom['stats'],dict) else atom['stats']
-     if any(values) or any(any(v) for v in atom['votes'].values()):
-      raise RuntimeError('Geometry repair would hide a nonzero atom: '+atom['id'])
+   geoms=repair_coverage(original,source_geoms,snapping_distance=snapping_distance,required_ids=required_ids)
+   for i,atom_id in required_ids.items():
+    if geoms[i].is_empty:raise RuntimeError('Geometry repair would hide a nonzero atom: '+atom_id)
    break
   except RuntimeError as error:
    if snapping_distance==1e-12:raise
